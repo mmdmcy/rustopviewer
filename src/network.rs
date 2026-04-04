@@ -1,5 +1,6 @@
 use if_addrs::{IfAddr, get_if_addrs};
-use std::{collections::BTreeSet, net::Ipv4Addr};
+use serde::Deserialize;
+use std::{collections::BTreeSet, net::Ipv4Addr, process::Command};
 
 #[derive(Debug, Clone)]
 pub struct ConnectionUrl {
@@ -11,6 +12,7 @@ pub struct ConnectionUrl {
 pub struct UrlSet {
     pub preferred: ConnectionUrl,
     pub tailscale: Vec<ConnectionUrl>,
+    pub tailscale_https: Option<ConnectionUrl>,
     pub lan: Vec<ConnectionUrl>,
     pub loopback: ConnectionUrl,
 }
@@ -20,6 +22,10 @@ pub fn discover_urls(port: u16, token: &str) -> UrlSet {
     let mut seen = BTreeSet::new();
     let mut tailscale = Vec::new();
     let mut lan = Vec::new();
+    let tailscale_https = discover_tailscale_dns_name().map(|dns_name| ConnectionUrl {
+        label: "Expected HTTPS URL after Tailscale Serve".to_string(),
+        url: format!("https://{dns_name}/?token={token}"),
+    });
 
     if let Ok(addresses) = get_if_addrs() {
         for address in addresses {
@@ -53,6 +59,7 @@ pub fn discover_urls(port: u16, token: &str) -> UrlSet {
     UrlSet {
         preferred,
         tailscale,
+        tailscale_https,
         lan,
         loopback,
     }
@@ -70,9 +77,69 @@ fn build_url(label: &str, ip: Ipv4Addr, port: u16, token: &str) -> ConnectionUrl
     }
 }
 
+fn discover_tailscale_dns_name() -> Option<String> {
+    let output = tailscale_status_output()?;
+    let status: TailscaleStatus = serde_json::from_slice(&output).ok()?;
+    if !status.current_tailnet.as_ref()?.magic_dns_enabled {
+        return None;
+    }
+
+    let dns_name = status
+        .self_node
+        .as_ref()?
+        .dns_name
+        .trim()
+        .trim_end_matches('.')
+        .to_string();
+
+    (!dns_name.is_empty()).then_some(dns_name)
+}
+
+fn tailscale_status_output() -> Option<Vec<u8>> {
+    for candidate in tailscale_command_candidates() {
+        let Ok(output) = Command::new(candidate).args(["status", "--json"]).output() else {
+            continue;
+        };
+        if output.status.success() {
+            return Some(output.stdout);
+        }
+    }
+
+    None
+}
+
+fn tailscale_command_candidates() -> impl Iterator<Item = &'static str> {
+    [
+        "tailscale",
+        "tailscale.exe",
+        r"C:\Program Files\Tailscale\tailscale.exe",
+    ]
+    .into_iter()
+}
+
+#[derive(Debug, Deserialize)]
+struct TailscaleStatus {
+    #[serde(rename = "Self")]
+    self_node: Option<TailscaleNode>,
+    #[serde(rename = "CurrentTailnet")]
+    current_tailnet: Option<TailscaleTailnet>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TailscaleNode {
+    #[serde(rename = "DNSName")]
+    dns_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TailscaleTailnet {
+    #[serde(rename = "MagicDNSEnabled")]
+    magic_dns_enabled: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_tailscale;
+    use super::{TailscaleStatus, is_tailscale};
     use std::net::Ipv4Addr;
 
     #[test]
@@ -82,5 +149,26 @@ mod tests {
         assert!(!is_tailscale(Ipv4Addr::new(100, 63, 255, 255)));
         assert!(!is_tailscale(Ipv4Addr::new(100, 128, 0, 1)));
         assert!(!is_tailscale(Ipv4Addr::new(192, 168, 1, 10)));
+    }
+
+    #[test]
+    fn tailscale_status_deserializes_magicdns_hostname() {
+        let status: TailscaleStatus = serde_json::from_str(
+            r#"{
+                "Self": {
+                    "DNSName": "sparta.tail359cf9.ts.net."
+                },
+                "CurrentTailnet": {
+                    "MagicDNSEnabled": true
+                }
+            }"#,
+        )
+        .expect("status json should deserialize");
+
+        assert_eq!(
+            status.self_node.expect("self node").dns_name,
+            "sparta.tail359cf9.ts.net."
+        );
+        assert!(status.current_tailnet.expect("tailnet").magic_dns_enabled);
     }
 }

@@ -219,7 +219,7 @@ impl App for RustOpViewerApp {
                 right.group(|ui| {
                     ui.heading("Connection URLs");
                     ui.label(
-                        RichText::new("Preferred remote URL")
+                        RichText::new("Preferred direct URL (HTTP)")
                             .color(Color32::from_rgb(148, 163, 184))
                             .strong(),
                     );
@@ -266,13 +266,55 @@ impl App for RustOpViewerApp {
                             self.copy_text(&ctx, "Preferred URL", self.urls.preferred.url.clone());
                         }
                     });
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("HTTPS via Tailscale Serve")
+                            .color(Color32::from_rgb(148, 163, 184))
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Enable MagicDNS and HTTPS certificates in Tailscale, then run this on the Windows host:",
+                        )
+                        .color(Color32::from_rgb(226, 232, 240)),
+                    );
+
+                    if let Some(url) = &self.urls.tailscale_https {
+                        render_url_row(ui, &ctx, &mut self.toast_message, url);
+                    }
+
+                    let serve_command = format!("tailscale serve --bg {}", self.state.port());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(&serve_command)
+                                .monospace()
+                                .color(Color32::from_rgb(191, 219, 254)),
+                        );
+                        if ui.small_button("Copy").clicked() {
+                            self.copy_text(
+                                &ctx,
+                                "Tailscale Serve command",
+                                serve_command.clone(),
+                            );
+                        }
+                    });
+                    ui.label(
+                        RichText::new(
+                            "Tailscale will print a trusted https://...ts.net URL that proxies back to ROV locally.",
+                        )
+                        .small()
+                        .color(Color32::from_rgb(100, 116, 139)),
+                    );
                 });
 
                 right.add_space(12.0);
                 right.group(|ui| {
                     ui.heading("How to Use It");
                     ui.label("1. Start Tailscale on both the laptop and your iPhone.");
-                    ui.label("2. Open one of the Tailscale URLs above in Safari on the phone.");
+                    ui.label("2. Open one of the direct Tailscale URLs above in Safari on the phone, or use the HTTPS Serve URL after you enable it.");
                     ui.label("3. Tap the live image for left click, long-press for right click, and use Drag mode when you need to hold the mouse button down.");
                     ui.label("4. Use the text box and shortcut buttons on the phone page for typing and common Windows commands.");
                     ui.add_space(10.0);
