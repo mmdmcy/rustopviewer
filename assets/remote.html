@@ -474,7 +474,7 @@
       <div class="overlay" id="frameOverlay">
         <div class="overlay-card">
           <strong id="overlayTitle">Waiting for the laptop</strong>
-          <span id="overlayMessage">Open the newest secure URL from the Windows app if this does not clear on its own.</span>
+          <span id="overlayMessage">Open the newest phone URL from the Windows app if this does not clear on its own.</span>
         </div>
       </div>
 
@@ -539,6 +539,9 @@
       <div class="return-dock">
         <button class="chip" id="showUiBtn">Show UI</button>
         <button class="chip" id="quickKeyboardBtn">Keyboard</button>
+        <button class="chip compact" id="quickZoomOutBtn">-</button>
+        <button class="chip compact" id="quickZoomResetBtn">1.0x</button>
+        <button class="chip compact" id="quickZoomInBtn">+</button>
         <button class="chip" id="exitFullscreenBtn">Exit Fill</button>
       </div>
     </section>
@@ -588,6 +591,9 @@
     const uiToggleBtn = document.getElementById("uiToggleBtn");
     const showUiBtn = document.getElementById("showUiBtn");
     const quickKeyboardBtn = document.getElementById("quickKeyboardBtn");
+    const quickZoomOutBtn = document.getElementById("quickZoomOutBtn");
+    const quickZoomResetBtn = document.getElementById("quickZoomResetBtn");
+    const quickZoomInBtn = document.getElementById("quickZoomInBtn");
     const exitFullscreenBtn = document.getElementById("exitFullscreenBtn");
     const directModeBtn = document.getElementById("directModeBtn");
     const dragModeBtn = document.getElementById("dragModeBtn");
@@ -628,7 +634,7 @@
         }
       });
 
-      [toolsToggleBtn, uiToggleBtn, showUiBtn, quickKeyboardBtn, exitFullscreenBtn, fullscreenBtn, keyboardBtn, zoomOutBtn, zoomResetBtn, zoomInBtn, directModeBtn, dragModeBtn, scrollModeBtn, sendTextBtn, textInput, document.getElementById("toolsSheet")]
+      [toolsToggleBtn, uiToggleBtn, showUiBtn, quickKeyboardBtn, quickZoomOutBtn, quickZoomResetBtn, quickZoomInBtn, exitFullscreenBtn, fullscreenBtn, keyboardBtn, zoomOutBtn, zoomResetBtn, zoomInBtn, directModeBtn, dragModeBtn, scrollModeBtn, sendTextBtn, textInput, document.getElementById("toolsSheet")]
         .filter(Boolean)
         .forEach((element) => {
           ["pointerdown", "pointerup", "click"].forEach((eventName) => {
@@ -678,6 +684,18 @@
 
       quickKeyboardBtn.addEventListener("click", () => {
         openKeyboard();
+      });
+
+      quickZoomOutBtn.addEventListener("click", () => {
+        zoomBy(-0.25);
+      });
+
+      quickZoomInBtn.addEventListener("click", () => {
+        zoomBy(0.25);
+      });
+
+      quickZoomResetBtn.addEventListener("click", () => {
+        resetZoom();
       });
 
       exitFullscreenBtn.addEventListener("click", () => {
@@ -767,16 +785,18 @@
       uiToggleBtn.textContent = state.uiHidden ? "Show UI" : "Hide UI";
       fullscreenBtn.textContent = state.focusMode ? "Exit Fill" : "Fill Screen";
       zoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
+      quickZoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
       directModeBtn.classList.toggle("active", !state.dragMode && !state.scrollMode);
       dragModeBtn.classList.toggle("active", state.dragMode);
       scrollModeBtn.classList.toggle("active", state.scrollMode);
       zoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
+      quickZoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
       exitFullscreenBtn.hidden = !state.focusMode;
     }
 
     async function refreshStatus() {
       if (!state.token) {
-        setConnectionState("Missing token", "Open the latest secure URL", "error");
+        setConnectionState("Missing token", "Open the latest phone URL", "error");
         if (!state.frameReady) {
           showOverlay("Missing token", "Open the newest phone URL from the Windows app.");
         }
@@ -790,7 +810,7 @@
         });
 
         if (response.status === 401) {
-          setConnectionState("Unauthorized", "Open the latest secure URL", "error");
+          setConnectionState("Unauthorized", "Open the latest phone URL", "error");
           if (!state.frameReady) {
             showOverlay("Unauthorized", "The saved token is no longer valid.");
           }
@@ -851,7 +871,7 @@
 
         if (response.status === 401) {
           if (!state.frameReady) {
-            showOverlay("Unauthorized", "Open the latest secure URL from the Windows app.");
+            showOverlay("Unauthorized", "Open the latest phone URL from the Windows app.");
           }
           return;
         }

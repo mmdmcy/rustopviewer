@@ -69,13 +69,27 @@ cargo run --release
 4. Open that URL in Safari on the iPhone.
 5. Use the remote page to view, tap, drag, scroll, type, and send shortcuts.
 
+### Optional: trusted HTTPS on iPhone
+
+ROV itself serves plain HTTP on the laptop. If you want Safari to stop showing the page as not secure, the recommended setup is to keep ROV on local HTTP and put Tailscale Serve in front of it for TLS.
+
+1. Enable MagicDNS and HTTPS certificates in the Tailscale admin console.
+2. On the Windows host, run:
+
+```powershell
+tailscale serve --bg 45080
+```
+
+3. Tailscale will print an `https://...ts.net` URL for this machine.
+4. Open that HTTPS URL in Safari on the iPhone.
+
+This keeps the Rust app simple while still giving you a browser-trusted certificate and encrypted HTTPS at the browser edge.
+
 ## Repository Standards
 
 This repository is set up to support long-term open source development:
 
 - Dual licensed under MIT or Apache-2.0
-- CI on GitHub Actions
-- Dependabot updates
 - Issue templates and PR template
 - Contributing, security, roadmap, and architecture docs
 
@@ -103,7 +117,8 @@ cargo test --all-targets --all-features
 - Remote API calls require the `X-Auth-Token` secret.
 - Regenerating the secure link invalidates old URLs immediately.
 - Tailscale is the recommended network boundary for internet use.
-- Plain `http` inside a tailnet is acceptable for personal use, but full HTTPS is still a desirable future improvement.
+- Direct `http` inside a tailnet is acceptable for personal use because Tailscale still encrypts transport, but browsers will still warn because the page itself is not `https`.
+- The recommended browser-trusted HTTPS deployment is Tailscale Serve in front of the local ROV server.
 
 ## Roadmap Highlights
 
