@@ -1,0 +1,50 @@
+use serde::Serialize;
+use std::{sync::Arc, time::SystemTime};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MonitorInfo {
+    pub id: u32,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub is_primary: bool,
+}
+
+impl MonitorInfo {
+    pub fn display_name(&self) -> String {
+        if self.is_primary {
+            format!("{} (primary)", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    pub fn resolution_label(&self) -> String {
+        format!("{}x{}", self.width, self.height)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LatestFrame {
+    pub jpeg: Arc<Vec<u8>>,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub encoded_width: u32,
+    pub encoded_height: u32,
+    pub captured_at: SystemTime,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusResponse {
+    pub selected_monitor: Option<MonitorInfo>,
+    pub monitors: Vec<MonitorInfo>,
+    pub has_frame: bool,
+    pub frame_width: Option<u32>,
+    pub frame_height: Option<u32>,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
+    pub last_frame_age_ms: Option<u128>,
+    pub capture_error: Option<String>,
+}
