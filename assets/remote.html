@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RustOp Viewer</title>
+  <style>
+    :root {
+      --bg-0: #03070d;
+      --bg-1: #0b1521;
+      --panel: rgba(8, 15, 24, 0.78);
+      --panel-strong: rgba(11, 18, 30, 0.92);
+      --border: rgba(148, 163, 184, 0.16);
+      --ink: #edf4fb;
+      --muted: #93a7bf;
+      --ok: #4ade80;
+      --warn: #f59e0b;
+      --danger: #f87171;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+      --radius-xl: 22px;
+      --radius-lg: 16px;
+      --radius-md: 13px;
+      --font: "Segoe UI Variable Display", "SF Pro Display", "Aptos", sans-serif;
+      --mono: "Cascadia Code", "SF Mono", "Consolas", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(249, 115, 22, 0.18), transparent 24%),
+        radial-gradient(circle at top right, rgba(59, 130, 246, 0.16), transparent 24%),
+        linear-gradient(180deg, var(--bg-0), var(--bg-1));
+      color: var(--ink);
+      font-family: var(--font);
+    }
+
+    body {
+      padding:
+        calc(env(safe-area-inset-top) + 8px)
+        8px
+        calc(env(safe-area-inset-bottom) + 8px);
+    }
+
+    body.focus-mode {
+      padding: 0;
+      background: #000;
+    }
+
+    .page {
+      min-height: calc(100svh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
+    }
+
+    body.focus-mode .page {
+      min-height: 100svh;
+    }
+
+    .viewer {
+      position: relative;
+      min-height: inherit;
+      border-radius: 26px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background:
+        radial-gradient(circle at top, rgba(37, 99, 235, 0.08), transparent 36%),
+        linear-gradient(180deg, rgba(6, 11, 18, 0.98), rgba(3, 7, 13, 1));
+      box-shadow: var(--shadow);
+      touch-action: none;
+      user-select: none;
+    }
+
+    body.focus-mode .viewer {
+      min-height: 100svh;
+      border-radius: 0;
+      border-left: 0;
+      border-right: 0;
+      border-top: 0;
+      border-bottom: 0;
+    }
+
+    .viewer::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(transparent 97%, rgba(255, 255, 255, 0.04) 97%),
+        linear-gradient(90deg, transparent 97%, rgba(255, 255, 255, 0.04) 97%);
+      background-size: 20px 20px;
+      opacity: 0.12;
+      pointer-events: none;
+    }
+
+    .screen-wrap {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+    }
+
+    body.focus-mode .screen-wrap {
+      padding: 0;
+    }
+
+    .screen-pan {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      will-change: transform;
+    }
+
+    .screen {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      background: #000;
+      border-radius: 18px;
+      object-fit: contain;
+      pointer-events: none;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+      transform-origin: center center;
+      will-change: transform;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: linear-gradient(180deg, rgba(4, 7, 12, 0.62), rgba(4, 7, 12, 0.16));
+      transition: opacity 180ms ease, visibility 180ms ease;
+    }
+
+    .overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .overlay-card {
+      width: min(430px, 100%);
+      padding: 18px 16px;
+      border-radius: var(--radius-xl);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(8, 15, 24, 0.82);
+      text-align: center;
+    }
+
+    .overlay-card strong {
+      display: block;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+    }
+
+    .overlay-card span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 0.95rem;
+    }
+
+    .hud-top,
+    .hud-bottom,
+    .sheet {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      z-index: 4;
+    }
+
+    .hud-top {
+      top: 10px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 36px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      font-size: 0.84rem;
+      white-space: nowrap;
+    }
+
+    .pill strong {
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .pill.ok strong { color: var(--ok); }
+    .pill.warn strong { color: var(--warn); }
+    .pill.error strong { color: var(--danger); }
+
+    .hud-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+
+    .chip,
+    .action {
+      appearance: none;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: linear-gradient(180deg, rgba(22, 34, 53, 0.94), rgba(11, 18, 29, 0.96));
+      color: var(--ink);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .chip {
+      min-height: 38px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+
+    .chip.compact {
+      min-width: 42px;
+      padding-left: 10px;
+      padding-right: 10px;
+      text-align: center;
+    }
+
+    .hud-bottom {
+      bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 10px;
+    }
+
+    body.focus-mode .hud-top {
+      top: calc(env(safe-area-inset-top) + 10px);
+    }
+
+    body.focus-mode .hud-bottom {
+      bottom: calc(env(safe-area-inset-bottom) + 10px);
+    }
+
+    .mode-bar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .mode-bar .chip.active,
+    .action.active {
+      border-color: rgba(249, 115, 22, 0.5);
+      background:
+        linear-gradient(180deg, rgba(245, 158, 11, 0.24), rgba(249, 115, 22, 0.18)),
+        linear-gradient(180deg, rgba(22, 34, 53, 0.94), rgba(11, 18, 29, 0.96));
+    }
+
+    .sheet {
+      bottom: 58px;
+      padding: 12px;
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      background: var(--panel-strong);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow);
+      display: none;
+      gap: 12px;
+      max-height: min(46svh, 410px);
+      overflow: auto;
+    }
+
+    body.tools-open .sheet {
+      display: grid;
+    }
+
+    body.focus-mode .sheet {
+      left: 8px;
+      right: 8px;
+      bottom: calc(env(safe-area-inset-bottom) + 58px);
+    }
+
+    .toolbar-grid,
+    .key-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .toolbar-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .key-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .action {
+      min-height: 48px;
+      border-radius: var(--radius-md);
+      padding: 11px 10px;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+    }
+
+    .text-row {
+      display: grid;
+      gap: 10px;
+    }
+
+    .text-box {
+      width: 100%;
+      min-height: 100px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: rgba(5, 10, 18, 0.98);
+      color: var(--ink);
+      padding: 13px;
+      resize: vertical;
+      font-family: var(--mono);
+    }
+
+    .text-box::placeholder {
+      color: #71859d;
+    }
+
+    body.ui-hidden .status-strip,
+    body.ui-hidden .mode-bar,
+    body.ui-hidden .sheet,
+    body.ui-hidden #toolsToggleBtn,
+    body.ui-hidden #uiToggleBtn,
+    body.ui-hidden #keyboardBtn,
+    body.ui-hidden #fullscreenBtn {
+      display: none !important;
+    }
+
+    body.ui-hidden .hud-top,
+    body.ui-hidden .hud-bottom {
+      left: 12px;
+      right: 12px;
+    }
+
+    .return-dock {
+      position: absolute;
+      right: 12px;
+      bottom: calc(env(safe-area-inset-bottom) + 12px);
+      z-index: 6;
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: calc(100% - 24px);
+    }
+
+    body.ui-hidden .return-dock,
+    body.focus-mode .return-dock {
+      display: flex;
+    }
+
+    @media (min-width: 760px) {
+      .toolbar-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .text-row {
+        grid-template-columns: 1fr auto;
+        align-items: start;
+      }
+
+      #sendTextBtn {
+        min-width: 150px;
+      }
+    }
+
+    @media (orientation: landscape) and (max-height: 430px) {
+      body {
+        padding:
+          calc(env(safe-area-inset-top) + 4px)
+          4px
+          calc(env(safe-area-inset-bottom) + 4px);
+      }
+
+      .viewer {
+        border-radius: 18px;
+      }
+
+      .hud-top,
+      .hud-bottom,
+      .sheet {
+        left: 6px;
+        right: 6px;
+      }
+
+      .hud-top {
+        top: 6px;
+        gap: 6px;
+      }
+
+      .hud-bottom {
+        bottom: 6px;
+      }
+
+      .pill {
+        min-height: 32px;
+        padding: 6px 10px;
+        font-size: 0.78rem;
+      }
+
+      .chip {
+        min-height: 34px;
+        padding: 6px 10px;
+        font-size: 0.82rem;
+      }
+
+      .sheet {
+        bottom: 46px;
+        gap: 8px;
+        padding: 8px;
+        max-height: min(48svh, 250px);
+      }
+
+      body.focus-mode .sheet {
+        bottom: calc(env(safe-area-inset-bottom) + 46px);
+      }
+
+      .action {
+        min-height: 40px;
+        padding: 8px 9px;
+        font-size: 0.83rem;
+      }
+
+      .text-box {
+        min-height: 70px;
+        padding: 10px 11px;
+      }
+
+      .return-dock {
+        right: 8px;
+        bottom: calc(env(safe-area-inset-bottom) + 8px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="viewer" id="frameSurface">
+      <div class="screen-wrap">
+        <div class="screen-pan" id="screenPan">
+          <img class="screen" id="frameImage" alt="Live desktop stream">
+        </div>
+      </div>
+
+      <div class="overlay" id="frameOverlay">
+        <div class="overlay-card">
+          <strong id="overlayTitle">Waiting for the laptop</strong>
+          <span id="overlayMessage">Open the newest secure URL from the Windows app if this does not clear on its own.</span>
+        </div>
+      </div>
+
+      <div class="hud-top">
+        <div class="status-strip">
+          <div class="pill warn" id="connectionPill"><strong>Connecting</strong><span id="connectionHint">Waiting for the server</span></div>
+          <div class="pill" id="monitorPill"><strong>Monitor</strong><span id="monitorHint">Unknown</span></div>
+          <div class="pill" id="framePill"><strong>Frame</strong><span id="frameHint">Pending</span></div>
+        </div>
+        <div class="hud-actions">
+          <button class="chip" id="fullscreenBtn">Fill Screen</button>
+          <button class="chip" id="keyboardBtn">Keyboard</button>
+          <button class="chip compact" id="zoomOutBtn">-</button>
+          <button class="chip compact" id="zoomResetBtn">1.0x</button>
+          <button class="chip compact" id="zoomInBtn">+</button>
+          <button class="chip" id="toolsToggleBtn">Tools</button>
+          <button class="chip" id="uiToggleBtn">Hide UI</button>
+        </div>
+      </div>
+
+      <div class="sheet" id="toolsSheet">
+        <div class="toolbar-grid">
+          <button class="action" data-shortcut="meta">Start</button>
+          <button class="action" data-shortcut="alt+tab">Alt+Tab</button>
+          <button class="action" data-shortcut="meta+r">Win+R</button>
+          <button class="action" data-shortcut="control+c">Ctrl+C</button>
+          <button class="action" data-shortcut="control+v">Ctrl+V</button>
+          <button class="action" data-shortcut="control+x">Ctrl+X</button>
+          <button class="action" data-shortcut="meta+d">Win+D</button>
+          <button class="action" data-shortcut="alt+f4">Alt+F4</button>
+        </div>
+
+        <div class="key-grid">
+          <button class="action" data-key="escape">Esc</button>
+          <button class="action" data-key="tab">Tab</button>
+          <button class="action" data-key="enter">Enter</button>
+          <button class="action" data-key="backspace">Back</button>
+          <button class="action" data-key="up_arrow">Up</button>
+          <button class="action" data-key="left_arrow">Left</button>
+          <button class="action" data-key="down_arrow">Down</button>
+          <button class="action" data-key="right_arrow">Right</button>
+          <button class="action" data-key="home">Home</button>
+          <button class="action" data-key="end">End</button>
+          <button class="action" data-key="page_up">PgUp</button>
+          <button class="action" data-key="page_down">PgDn</button>
+        </div>
+
+        <div class="text-row">
+          <textarea class="text-box" id="textInput" placeholder="Type text here"></textarea>
+          <button class="action" id="sendTextBtn">Send Text</button>
+        </div>
+      </div>
+
+      <div class="hud-bottom">
+        <div class="mode-bar">
+          <button class="chip active" id="directModeBtn">Direct</button>
+          <button class="chip" id="dragModeBtn">Drag</button>
+          <button class="chip" id="scrollModeBtn">Scroll</button>
+        </div>
+      </div>
+
+      <div class="return-dock">
+        <button class="chip" id="showUiBtn">Show UI</button>
+        <button class="chip" id="quickKeyboardBtn">Keyboard</button>
+        <button class="chip" id="exitFullscreenBtn">Exit Fill</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const TOKEN_STORAGE_KEY = "rustopviewer-auth-token";
+    const FRAME_INTERVAL_MS = 220;
+    const STATUS_INTERVAL_MS = 1800;
+    const MOVE_INTERVAL_MS = 40;
+    const LONG_PRESS_MS = 520;
+
+    const state = {
+      token: "",
+      dragMode: false,
+      scrollMode: false,
+      toolsOpen: false,
+      uiHidden: false,
+      focusMode: false,
+      viewScale: 1,
+      viewOffsetX: 0,
+      viewOffsetY: 0,
+      pointer: null,
+      frameReady: false,
+      frameObjectUrl: null
+    };
+
+    const body = document.body;
+    const frameSurface = document.getElementById("frameSurface");
+    const screenPan = document.getElementById("screenPan");
+    const frameImage = document.getElementById("frameImage");
+    const frameOverlay = document.getElementById("frameOverlay");
+    const overlayTitle = document.getElementById("overlayTitle");
+    const overlayMessage = document.getElementById("overlayMessage");
+    const connectionPill = document.getElementById("connectionPill");
+    const connectionHint = document.getElementById("connectionHint");
+    const monitorPill = document.getElementById("monitorPill");
+    const monitorHint = document.getElementById("monitorHint");
+    const framePill = document.getElementById("framePill");
+    const frameHint = document.getElementById("frameHint");
+    const fullscreenBtn = document.getElementById("fullscreenBtn");
+    const keyboardBtn = document.getElementById("keyboardBtn");
+    const zoomOutBtn = document.getElementById("zoomOutBtn");
+    const zoomResetBtn = document.getElementById("zoomResetBtn");
+    const zoomInBtn = document.getElementById("zoomInBtn");
+    const toolsToggleBtn = document.getElementById("toolsToggleBtn");
+    const uiToggleBtn = document.getElementById("uiToggleBtn");
+    const showUiBtn = document.getElementById("showUiBtn");
+    const quickKeyboardBtn = document.getElementById("quickKeyboardBtn");
+    const exitFullscreenBtn = document.getElementById("exitFullscreenBtn");
+    const directModeBtn = document.getElementById("directModeBtn");
+    const dragModeBtn = document.getElementById("dragModeBtn");
+    const scrollModeBtn = document.getElementById("scrollModeBtn");
+    const textInput = document.getElementById("textInput");
+    const sendTextBtn = document.getElementById("sendTextBtn");
+
+    boot();
+
+    function boot() {
+      state.token = resolveToken();
+      bindControls();
+      syncUiState();
+      refreshStatus();
+      refreshFrame();
+      window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
+    }
+
+    function bindControls() {
+      frameImage.addEventListener("load", () => {
+        state.frameReady = true;
+        frameOverlay.classList.add("hidden");
+        applyViewTransform();
+      });
+
+      frameImage.addEventListener("error", () => {
+        state.frameReady = false;
+        if (!state.frameObjectUrl) {
+          showOverlay("Image error", "Safari could not decode the latest frame.");
+        }
+      });
+
+      document.addEventListener("fullscreenchange", () => {
+        if (!document.fullscreenElement && state.focusMode) {
+          state.focusMode = false;
+          state.uiHidden = false;
+          syncUiState();
+        }
+      });
+
+      [toolsToggleBtn, uiToggleBtn, showUiBtn, quickKeyboardBtn, exitFullscreenBtn, fullscreenBtn, keyboardBtn, zoomOutBtn, zoomResetBtn, zoomInBtn, directModeBtn, dragModeBtn, scrollModeBtn, sendTextBtn, textInput, document.getElementById("toolsSheet")]
+        .filter(Boolean)
+        .forEach((element) => {
+          ["pointerdown", "pointerup", "click"].forEach((eventName) => {
+            element.addEventListener(eventName, (event) => {
+              event.stopPropagation();
+            });
+          });
+        });
+
+      fullscreenBtn.addEventListener("click", () => {
+        toggleFocusMode();
+      });
+
+      keyboardBtn.addEventListener("click", () => {
+        openKeyboard();
+      });
+
+      toolsToggleBtn.addEventListener("click", () => {
+        state.toolsOpen = !state.toolsOpen;
+        syncUiState();
+      });
+
+      zoomOutBtn.addEventListener("click", () => {
+        zoomBy(-0.25);
+      });
+
+      zoomInBtn.addEventListener("click", () => {
+        zoomBy(0.25);
+      });
+
+      zoomResetBtn.addEventListener("click", () => {
+        resetZoom();
+      });
+
+      uiToggleBtn.addEventListener("click", () => {
+        state.uiHidden = !state.uiHidden;
+        if (state.uiHidden) {
+          state.toolsOpen = false;
+        }
+        syncUiState();
+      });
+
+      showUiBtn.addEventListener("click", () => {
+        state.uiHidden = false;
+        syncUiState();
+      });
+
+      quickKeyboardBtn.addEventListener("click", () => {
+        openKeyboard();
+      });
+
+      exitFullscreenBtn.addEventListener("click", () => {
+        if (state.focusMode) {
+          toggleFocusMode(false);
+        } else {
+          state.uiHidden = false;
+          syncUiState();
+        }
+      });
+
+      directModeBtn.addEventListener("click", () => {
+        state.dragMode = false;
+        state.scrollMode = false;
+        syncUiState();
+      });
+
+      dragModeBtn.addEventListener("click", () => {
+        state.dragMode = !state.dragMode;
+        if (state.dragMode) {
+          state.scrollMode = false;
+        }
+        syncUiState();
+      });
+
+      scrollModeBtn.addEventListener("click", () => {
+        state.scrollMode = !state.scrollMode;
+        if (state.scrollMode) {
+          state.dragMode = false;
+        }
+        syncUiState();
+      });
+
+      sendTextBtn.addEventListener("click", async () => {
+        const text = textInput.value;
+        if (!text) {
+          return;
+        }
+        const ok = await sendCommand({ type: "text", text });
+        if (ok) {
+          textInput.value = "";
+        }
+      });
+
+      document.querySelectorAll("[data-shortcut]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const keys = button.getAttribute("data-shortcut").split("+");
+          sendCommand({ type: "shortcut", keys });
+        });
+      });
+
+      document.querySelectorAll("[data-key]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const key = button.getAttribute("data-key");
+          sendCommand({ type: "key", key });
+        });
+      });
+
+      frameSurface.addEventListener("pointerdown", onPointerDown);
+      frameSurface.addEventListener("pointermove", onPointerMove);
+      frameSurface.addEventListener("pointerup", onPointerUp);
+      frameSurface.addEventListener("pointercancel", onPointerCancel);
+      frameSurface.addEventListener("pointerleave", onPointerCancel);
+    }
+
+    function resolveToken() {
+      const url = new URL(window.location.href);
+      const tokenFromQuery = url.searchParams.get("token");
+      if (tokenFromQuery) {
+        localStorage.setItem(TOKEN_STORAGE_KEY, tokenFromQuery);
+        url.searchParams.delete("token");
+        window.history.replaceState({}, "", url.toString());
+        return tokenFromQuery;
+      }
+      return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+    }
+
+    function authHeaders() {
+      return state.token ? { "X-Auth-Token": state.token } : {};
+    }
+
+    function syncUiState() {
+      body.classList.toggle("tools-open", state.toolsOpen && !state.uiHidden);
+      body.classList.toggle("ui-hidden", state.uiHidden);
+      body.classList.toggle("focus-mode", state.focusMode);
+      toolsToggleBtn.textContent = state.toolsOpen ? "Close" : "Tools";
+      uiToggleBtn.textContent = state.uiHidden ? "Show UI" : "Hide UI";
+      fullscreenBtn.textContent = state.focusMode ? "Exit Fill" : "Fill Screen";
+      zoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
+      directModeBtn.classList.toggle("active", !state.dragMode && !state.scrollMode);
+      dragModeBtn.classList.toggle("active", state.dragMode);
+      scrollModeBtn.classList.toggle("active", state.scrollMode);
+      zoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
+      exitFullscreenBtn.hidden = !state.focusMode;
+    }
+
+    async function refreshStatus() {
+      if (!state.token) {
+        setConnectionState("Missing token", "Open the latest secure URL", "error");
+        if (!state.frameReady) {
+          showOverlay("Missing token", "Open the newest phone URL from the Windows app.");
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/status", {
+          headers: authHeaders(),
+          cache: "no-store"
+        });
+
+        if (response.status === 401) {
+          setConnectionState("Unauthorized", "Open the latest secure URL", "error");
+          if (!state.frameReady) {
+            showOverlay("Unauthorized", "The saved token is no longer valid.");
+          }
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`status ${response.status}`);
+        }
+
+        const payload = await response.json();
+        if (payload.selected_monitor) {
+          const monitor = payload.selected_monitor;
+          monitorPill.className = "pill";
+          monitorHint.textContent = `${monitor.name} ${monitor.width}x${monitor.height}`;
+        } else {
+          monitorPill.className = "pill warn";
+          monitorHint.textContent = "No monitor";
+        }
+
+        if (payload.last_frame_age_ms !== null) {
+          framePill.className = "pill";
+          frameHint.textContent = `${payload.frame_width}x${payload.frame_height} ${payload.last_frame_age_ms}ms`;
+        } else {
+          framePill.className = "pill warn";
+          frameHint.textContent = "No frame";
+        }
+
+        if (payload.capture_error) {
+          setConnectionState("Capture", payload.capture_error, "warn");
+          if (!state.frameReady) {
+            showOverlay("Capture issue", payload.capture_error);
+          }
+        } else {
+          setConnectionState("Connected", "Live", "ok");
+          if (!payload.has_frame && !state.frameReady) {
+            showOverlay("Waiting for frame", "The laptop is connected but has not delivered the first frame yet.");
+          }
+        }
+      } catch (error) {
+        setConnectionState("Offline", error.message, "error");
+        if (!state.frameReady) {
+          showOverlay("Offline", `Status request failed: ${error.message}`);
+        }
+      }
+    }
+
+    async function refreshFrame() {
+      try {
+        if (!state.token) {
+          return;
+        }
+
+        const response = await fetch(`/api/frame.jpg?ts=${Date.now()}`, {
+          headers: authHeaders(),
+          cache: "no-store"
+        });
+
+        if (response.status === 401) {
+          if (!state.frameReady) {
+            showOverlay("Unauthorized", "Open the latest secure URL from the Windows app.");
+          }
+          return;
+        }
+
+        if (response.status === 404) {
+          if (!state.frameReady) {
+            showOverlay("Waiting for frame", "The server is reachable but has not provided a frame yet.");
+          }
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`frame ${response.status}`);
+        }
+
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        if (state.frameObjectUrl) {
+          URL.revokeObjectURL(state.frameObjectUrl);
+        }
+        state.frameObjectUrl = objectUrl;
+        frameImage.src = objectUrl;
+      } catch (error) {
+        if (!state.frameReady) {
+          showOverlay("Stream paused", `Frame request failed: ${error.message}`);
+        }
+      } finally {
+        window.setTimeout(refreshFrame, FRAME_INTERVAL_MS);
+      }
+    }
+
+    async function sendCommand(body) {
+      if (!state.token) {
+        return false;
+      }
+
+      try {
+        const response = await fetch("/api/input", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeaders()
+          },
+          body: JSON.stringify(body)
+        });
+
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    function onPointerDown(event) {
+      if (!state.token || !state.frameReady) {
+        return;
+      }
+
+      if (!isScreenPointerTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      frameSurface.setPointerCapture?.(event.pointerId);
+      const point = pointFromEvent(event);
+      state.pointer = {
+        pointerId: event.pointerId,
+        start: point,
+        last: point,
+        moved: false,
+        startedAt: Date.now(),
+        lastMoveAt: 0,
+        startOffsetX: state.viewOffsetX,
+        startOffsetY: state.viewOffsetY
+      };
+
+      if (state.dragMode) {
+        sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "press" });
+      }
+    }
+
+    function onPointerMove(event) {
+      if (!state.pointer || state.pointer.pointerId !== event.pointerId) {
+        return;
+      }
+
+      event.preventDefault();
+      const point = pointFromEvent(event);
+      const moveDistance = Math.abs(point.clientX - state.pointer.start.clientX) + Math.abs(point.clientY - state.pointer.start.clientY);
+      if (moveDistance > 9) {
+        state.pointer.moved = true;
+      }
+
+      if (state.scrollMode) {
+        const deltaX = point.clientX - state.pointer.last.clientX;
+        const deltaY = point.clientY - state.pointer.last.clientY;
+        const horizontal = Math.trunc(deltaX / 56);
+        const vertical = Math.trunc(deltaY / 56);
+        if (horizontal || vertical) {
+          sendCommand({ type: "scroll", horizontal, vertical });
+          state.pointer.last = point;
+        }
+        return;
+      }
+
+      if (canPanView()) {
+        state.viewOffsetX = state.pointer.startOffsetX + (point.clientX - state.pointer.start.clientX);
+        state.viewOffsetY = state.pointer.startOffsetY + (point.clientY - state.pointer.start.clientY);
+        clampViewOffset();
+        applyViewTransform();
+        state.pointer.last = point;
+        return;
+      }
+
+      const now = Date.now();
+      if (state.pointer.moved && now - state.pointer.lastMoveAt >= MOVE_INTERVAL_MS) {
+        state.pointer.lastMoveAt = now;
+        state.pointer.last = point;
+        sendCommand({ type: "move", x: point.x, y: point.y });
+      }
+    }
+
+    function onPointerUp(event) {
+      if (!state.pointer || state.pointer.pointerId !== event.pointerId) {
+        return;
+      }
+
+      event.preventDefault();
+      const point = pointFromEvent(event);
+      const heldFor = Date.now() - state.pointer.startedAt;
+
+      if (state.scrollMode) {
+        state.pointer = null;
+        return;
+      }
+
+      if (state.dragMode) {
+        sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "release" });
+        state.pointer = null;
+        return;
+      }
+
+      if (canPanView() && state.pointer.moved) {
+        state.pointer = null;
+        return;
+      }
+
+      if (!state.pointer.moved && heldFor >= LONG_PRESS_MS) {
+        sendCommand({ type: "click", x: point.x, y: point.y, button: "right", count: 1 });
+      } else if (!state.pointer.moved) {
+        sendCommand({ type: "click", x: point.x, y: point.y, button: "left", count: 1 });
+      } else {
+        sendCommand({ type: "move", x: point.x, y: point.y });
+      }
+
+      state.pointer = null;
+    }
+
+    function onPointerCancel(event) {
+      if (!state.pointer) {
+        return;
+      }
+
+      if (state.dragMode) {
+        const point = pointFromEvent(event);
+        sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "release" });
+      }
+
+      state.pointer = null;
+    }
+
+    function pointFromEvent(event) {
+      const rect = getInteractiveRect();
+      const width = rect.width || 1;
+      const height = rect.height || 1;
+      return {
+        x: clamp((event.clientX - rect.left) / width, 0, 1),
+        y: clamp((event.clientY - rect.top) / height, 0, 1),
+        clientX: event.clientX,
+        clientY: event.clientY
+      };
+    }
+
+    function getInteractiveRect() {
+      const imageRect = frameImage.getBoundingClientRect();
+      if (imageRect.width > 8 && imageRect.height > 8) {
+        return imageRect;
+      }
+      return frameSurface.getBoundingClientRect();
+    }
+
+    function isScreenPointerTarget(target) {
+      return Boolean(
+        target === frameSurface ||
+        target?.closest?.(".screen-wrap")
+      );
+    }
+
+    function openKeyboard() {
+      state.uiHidden = false;
+      state.toolsOpen = true;
+      syncUiState();
+      requestAnimationFrame(() => {
+        textInput.focus({ preventScroll: true });
+        textInput.click();
+        textInput.setSelectionRange(textInput.value.length, textInput.value.length);
+      });
+    }
+
+    function toggleFocusMode(forceValue) {
+      state.focusMode = typeof forceValue === "boolean" ? forceValue : !state.focusMode;
+      if (state.focusMode) {
+        state.uiHidden = true;
+        state.toolsOpen = false;
+        requestBrowserFullscreen();
+      } else {
+        state.uiHidden = false;
+        exitBrowserFullscreen();
+      }
+      syncUiState();
+      clampViewOffset();
+      applyViewTransform();
+    }
+
+    function requestBrowserFullscreen() {
+      const element = document.documentElement;
+      if (document.fullscreenElement || !element.requestFullscreen) {
+        return;
+      }
+      element.requestFullscreen().catch(() => {});
+    }
+
+    function exitBrowserFullscreen() {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    function zoomBy(delta) {
+      state.viewScale = clamp(Number((state.viewScale + delta).toFixed(2)), 1, 4);
+      if (state.viewScale <= 1.001) {
+        state.viewScale = 1;
+        state.viewOffsetX = 0;
+        state.viewOffsetY = 0;
+      }
+      clampViewOffset();
+      applyViewTransform();
+      syncUiState();
+    }
+
+    function resetZoom() {
+      state.viewScale = 1;
+      state.viewOffsetX = 0;
+      state.viewOffsetY = 0;
+      applyViewTransform();
+      syncUiState();
+    }
+
+    function canPanView() {
+      return state.viewScale > 1.001 && !state.dragMode && !state.scrollMode;
+    }
+
+    function clampViewOffset() {
+      const baseWidth = frameImage.offsetWidth || 0;
+      const baseHeight = frameImage.offsetHeight || 0;
+      if (!baseWidth || !baseHeight || state.viewScale <= 1.001) {
+        state.viewOffsetX = 0;
+        state.viewOffsetY = 0;
+        return;
+      }
+
+      const maxOffsetX = ((baseWidth * state.viewScale) - baseWidth) / 2;
+      const maxOffsetY = ((baseHeight * state.viewScale) - baseHeight) / 2;
+      state.viewOffsetX = clamp(state.viewOffsetX, -maxOffsetX, maxOffsetX);
+      state.viewOffsetY = clamp(state.viewOffsetY, -maxOffsetY, maxOffsetY);
+    }
+
+    function applyViewTransform() {
+      screenPan.style.transform = `translate3d(${state.viewOffsetX}px, ${state.viewOffsetY}px, 0)`;
+      frameImage.style.transform = `scale(${state.viewScale})`;
+    }
+
+    function showOverlay(title, message) {
+      overlayTitle.textContent = title;
+      overlayMessage.textContent = message;
+      frameOverlay.classList.remove("hidden");
+    }
+
+    function setConnectionState(title, subtitle, kind) {
+      connectionPill.className = `pill ${kind || ""}`.trim();
+      connectionPill.querySelector("strong").textContent = title;
+      connectionHint.textContent = subtitle;
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+  </script>
+</body>
+</html>
