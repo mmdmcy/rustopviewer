@@ -22,6 +22,8 @@
       --radius-md: 13px;
       --font: "Segoe UI Variable Display", "SF Pro Display", "Aptos", sans-serif;
       --mono: "Cascadia Code", "SF Mono", "Consolas", monospace;
+      --viewer-top-inset: 0px;
+      --viewer-bottom-inset: 0px;
     }
 
     * {
@@ -105,11 +107,11 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 0;
+      padding: var(--viewer-top-inset) 0 var(--viewer-bottom-inset);
     }
 
     body.focus-mode .screen-wrap {
-      padding: 0;
+      padding: var(--viewer-top-inset) 0 var(--viewer-bottom-inset);
     }
 
     .screen-pan {
@@ -345,16 +347,11 @@
     }
 
     body.ui-hidden .status-strip,
-    body.ui-hidden .mode-bar,
     body.ui-hidden .sheet,
-    body.ui-hidden #toolsToggleBtn,
-    body.ui-hidden #uiToggleBtn,
-    body.ui-hidden #keyboardBtn,
-    body.ui-hidden #fullscreenBtn {
+    body.ui-hidden .hud-top {
       display: none !important;
     }
 
-    body.ui-hidden .hud-top,
     body.ui-hidden .hud-bottom {
       left: 12px;
       right: 12px;
@@ -584,6 +581,9 @@
     const monitorHint = document.getElementById("monitorHint");
     const framePill = document.getElementById("framePill");
     const frameHint = document.getElementById("frameHint");
+    const hudTop = document.querySelector(".hud-top");
+    const hudBottom = document.querySelector(".hud-bottom");
+    const returnDock = document.querySelector(".return-dock");
     const fullscreenBtn = document.getElementById("fullscreenBtn");
     const keyboardBtn = document.getElementById("keyboardBtn");
     const zoomOutBtn = document.getElementById("zoomOutBtn");
@@ -602,6 +602,7 @@
     const scrollModeBtn = document.getElementById("scrollModeBtn");
     const textInput = document.getElementById("textInput");
     const sendTextBtn = document.getElementById("sendTextBtn");
+    let viewportLayoutFrame = 0;
 
     boot();
 
@@ -618,6 +619,7 @@
       frameImage.addEventListener("load", () => {
         state.frameReady = true;
         frameOverlay.classList.add("hidden");
+        scheduleViewportLayout();
         applyViewTransform();
       });
 
@@ -635,6 +637,10 @@
           syncUiState();
         }
       });
+
+      window.addEventListener("resize", scheduleViewportLayout);
+      window.visualViewport?.addEventListener("resize", scheduleViewportLayout);
+      window.visualViewport?.addEventListener("scroll", scheduleViewportLayout);
 
       [toolsToggleBtn, uiToggleBtn, showUiBtn, quickKeyboardBtn, quickZoomOutBtn, quickZoomResetBtn, quickZoomInBtn, exitFullscreenBtn, fullscreenBtn, keyboardBtn, zoomOutBtn, zoomResetBtn, zoomInBtn, directModeBtn, dragModeBtn, scrollModeBtn, sendTextBtn, textInput, document.getElementById("toolsSheet")]
         .filter(Boolean)
@@ -817,6 +823,7 @@
       zoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
       quickZoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
       exitFullscreenBtn.hidden = !state.focusMode;
+      scheduleViewportLayout();
     }
 
     async function refreshStatus() {
@@ -1227,6 +1234,48 @@
       const maxOffsetY = ((baseHeight * state.viewScale) - baseHeight) / 2;
       state.viewOffsetX = clamp(state.viewOffsetX, -maxOffsetX, maxOffsetX);
       state.viewOffsetY = clamp(state.viewOffsetY, -maxOffsetY, maxOffsetY);
+    }
+
+    function scheduleViewportLayout() {
+      if (viewportLayoutFrame) {
+        return;
+      }
+
+      viewportLayoutFrame = requestAnimationFrame(() => {
+        viewportLayoutFrame = 0;
+        updateViewportLayout();
+      });
+    }
+
+    function updateViewportLayout() {
+      const viewerRect = frameSurface.getBoundingClientRect();
+      if (!viewerRect.width || !viewerRect.height) {
+        return;
+      }
+
+      const topInset = measureOverlayInset(hudTop, viewerRect, "top");
+      const bottomInset = Math.max(
+        measureOverlayInset(hudBottom, viewerRect, "bottom"),
+        measureOverlayInset(returnDock, viewerRect, "bottom")
+      );
+
+      frameSurface.style.setProperty("--viewer-top-inset", `${Math.ceil(topInset)}px`);
+      frameSurface.style.setProperty("--viewer-bottom-inset", `${Math.ceil(bottomInset)}px`);
+      clampViewOffset();
+      applyViewTransform();
+    }
+
+    function measureOverlayInset(element, containerRect, edge) {
+      if (!element || !element.getClientRects().length) {
+        return 0;
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (edge === "top") {
+        return Math.max(0, rect.bottom - containerRect.top);
+      }
+
+      return Math.max(0, containerRect.bottom - rect.top);
     }
 
     function applyViewTransform() {
