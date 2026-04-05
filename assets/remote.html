@@ -67,7 +67,7 @@
     .viewer {
       position: relative;
       min-height: inherit;
-      border-radius: 26px;
+      border-radius: 0;
       overflow: hidden;
       border: 1px solid var(--border);
       background:
@@ -105,7 +105,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 10px;
+      padding: 0;
     }
 
     body.focus-mode .screen-wrap {
@@ -126,10 +126,9 @@
       width: auto;
       height: auto;
       background: #000;
-      border-radius: 18px;
+      border-radius: 0;
       object-fit: contain;
       pointer-events: none;
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
       transform-origin: center center;
       will-change: transform;
     }
@@ -402,7 +401,7 @@
       }
 
       .viewer {
-        border-radius: 18px;
+        border-radius: 0;
       }
 
       .hud-top,
@@ -553,6 +552,7 @@
     const STATUS_INTERVAL_MS = 1800;
     const MOVE_INTERVAL_MS = 40;
     const LONG_PRESS_MS = 520;
+    const SCROLL_STEP_PX = 36;
 
     const state = {
       token: "",
@@ -781,10 +781,9 @@
       });
 
       frameSurface.addEventListener("pointerdown", onPointerDown);
-      frameSurface.addEventListener("pointermove", onPointerMove);
-      frameSurface.addEventListener("pointerup", onPointerUp);
-      frameSurface.addEventListener("pointercancel", onPointerCancel);
-      frameSurface.addEventListener("pointerleave", onPointerCancel);
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerCancel);
     }
 
     function resolveToken() {
@@ -1014,7 +1013,9 @@
         startedAt: Date.now(),
         lastMoveAt: 0,
         startOffsetX: state.viewOffsetX,
-        startOffsetY: state.viewOffsetY
+        startOffsetY: state.viewOffsetY,
+        scrollResidualX: 0,
+        scrollResidualY: 0
       };
 
       if (state.dragMode) {
@@ -1037,11 +1038,16 @@
       if (state.scrollMode) {
         const deltaX = point.clientX - state.pointer.last.clientX;
         const deltaY = point.clientY - state.pointer.last.clientY;
-        const horizontal = Math.trunc(deltaX / 56);
-        const vertical = Math.trunc(deltaY / 56);
+        state.pointer.scrollResidualX += deltaX;
+        state.pointer.scrollResidualY += deltaY;
+        const horizontal = consumeScrollSteps(state.pointer.scrollResidualX);
+        const vertical = consumeScrollSteps(state.pointer.scrollResidualY);
+        state.pointer.scrollResidualX -= horizontal * SCROLL_STEP_PX;
+        state.pointer.scrollResidualY -= vertical * SCROLL_STEP_PX;
+        state.pointer.last = point;
         if (horizontal || vertical) {
+          state.pointer.moved = true;
           sendCommand({ type: "scroll", horizontal, vertical });
-          state.pointer.last = point;
         }
         return;
       }
@@ -1073,17 +1079,20 @@
       const heldFor = Date.now() - state.pointer.startedAt;
 
       if (state.scrollMode) {
+        releaseTrackedPointer(event.pointerId);
         state.pointer = null;
         return;
       }
 
       if (state.dragMode) {
         sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "release" });
+        releaseTrackedPointer(event.pointerId);
         state.pointer = null;
         return;
       }
 
       if (canPanView() && state.pointer.moved) {
+        releaseTrackedPointer(event.pointerId);
         state.pointer = null;
         return;
       }
@@ -1096,11 +1105,12 @@
         sendCommand({ type: "move", x: point.x, y: point.y });
       }
 
+      releaseTrackedPointer(event.pointerId);
       state.pointer = null;
     }
 
     function onPointerCancel(event) {
-      if (!state.pointer) {
+      if (!state.pointer || state.pointer.pointerId !== event.pointerId) {
         return;
       }
 
@@ -1109,6 +1119,7 @@
         sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "release" });
       }
 
+      releaseTrackedPointer(event.pointerId);
       state.pointer = null;
     }
 
@@ -1237,6 +1248,24 @@
 
     function clamp(value, min, max) {
       return Math.min(Math.max(value, min), max);
+    }
+
+    function consumeScrollSteps(delta) {
+      if (Math.abs(delta) < SCROLL_STEP_PX) {
+        return 0;
+      }
+
+      return Math.sign(delta) * Math.floor(Math.abs(delta) / SCROLL_STEP_PX);
+    }
+
+    function releaseTrackedPointer(pointerId) {
+      if (pointerId === undefined) {
+        return;
+      }
+
+      if (frameSurface.hasPointerCapture?.(pointerId)) {
+        frameSurface.releasePointerCapture(pointerId);
+      }
     }
   </script>
 </body>
