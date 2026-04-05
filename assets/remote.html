@@ -523,7 +523,7 @@
         </div>
 
         <div class="text-row">
-          <textarea class="text-box" id="textInput" placeholder="Type text here"></textarea>
+          <textarea class="text-box" id="textInput" placeholder="Type text here" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
           <button class="action" id="sendTextBtn">Send Text</button>
         </div>
       </div>
@@ -566,7 +566,9 @@
       viewOffsetY: 0,
       pointer: null,
       frameReady: false,
-      frameObjectUrl: null
+      frameObjectUrl: null,
+      sendingText: false,
+      textComposing: false
     };
 
     const body = document.body;
@@ -729,14 +731,38 @@
         syncUiState();
       });
 
+      textInput.addEventListener("compositionstart", () => {
+        state.textComposing = true;
+      });
+
+      textInput.addEventListener("compositionend", () => {
+        state.textComposing = false;
+      });
+
       sendTextBtn.addEventListener("click", async () => {
+        if (state.sendingText) {
+          return;
+        }
+
+        await settleTextInput();
         const text = textInput.value;
         if (!text) {
           return;
         }
-        const ok = await sendCommand({ type: "text", text });
-        if (ok) {
-          textInput.value = "";
+
+        state.sendingText = true;
+        sendTextBtn.disabled = true;
+        sendTextBtn.textContent = "Sending...";
+
+        try {
+          const ok = await sendCommand({ type: "text", text });
+          if (ok) {
+            textInput.value = "";
+          }
+        } finally {
+          state.sendingText = false;
+          sendTextBtn.disabled = false;
+          sendTextBtn.textContent = "Send Text";
         }
       });
 
@@ -903,6 +929,38 @@
       }
     }
 
+    async function settleTextInput() {
+      if (document.activeElement === textInput) {
+        textInput.blur();
+      }
+
+      await nextFrame();
+
+      if (state.textComposing) {
+        await new Promise((resolve) => {
+          let settled = false;
+          let timeoutId = 0;
+
+          const finish = () => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            state.textComposing = false;
+            window.clearTimeout(timeoutId);
+            textInput.removeEventListener("compositionend", finish);
+            resolve();
+          };
+
+          textInput.addEventListener("compositionend", finish, { once: true });
+          timeoutId = window.setTimeout(finish, 180);
+        });
+      } else {
+        await wait(40);
+      }
+    }
+
     async function sendCommand(body) {
       if (!state.token) {
         return false;
@@ -922,6 +980,18 @@
       } catch {
         return false;
       }
+    }
+
+    function nextFrame() {
+      return new Promise((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    }
+
+    function wait(ms) {
+      return new Promise((resolve) => {
+        window.setTimeout(resolve, ms);
+      });
     }
 
     function onPointerDown(event) {

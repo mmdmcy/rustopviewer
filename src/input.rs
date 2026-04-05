@@ -2,16 +2,18 @@ use anyhow::{Context, Result, anyhow};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use serde::Deserialize;
 use std::{
+    borrow::Cow,
     mem::size_of,
     sync::mpsc::{self, Sender},
     thread,
 };
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
-        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-        MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
-        MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE,
+        MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY,
     },
     WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -258,10 +260,7 @@ fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
 
             Ok(())
         }
-        InputCommand::Text { text } => {
-            enigo.text(&text).context("failed to inject text input")?;
-            Ok(())
-        }
+        InputCommand::Text { text } => inject_text(enigo, &text),
         InputCommand::Key { key, action } => {
             enigo
                 .key(to_enigo_key(key), to_enigo_direction(action))
@@ -270,6 +269,26 @@ fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
         }
         InputCommand::Shortcut { keys } => run_shortcut(enigo, &keys),
     }
+}
+
+fn inject_text(enigo: &mut Enigo, text: &str) -> Result<()> {
+    let normalized = normalize_text_for_injection(text);
+
+    for character in normalized.chars() {
+        match character {
+            '\n' => enigo
+                .key(Key::Return, Direction::Click)
+                .context("failed to inject a line break")?,
+            '\t' => enigo
+                .key(Key::Tab, Direction::Click)
+                .context("failed to inject a tab")?,
+            '\0' => return Err(anyhow!("text input contained a null byte")),
+            _ => send_unicode_char(character)
+                .with_context(|| format!("failed to inject character {character:?}"))?,
+        }
+    }
+
+    Ok(())
 }
 
 fn run_shortcut(enigo: &mut Enigo, keys: &[RemoteKey]) -> Result<()> {
@@ -345,6 +364,48 @@ fn mouse_scroll(amount: i32, vertical: bool) -> Result<()> {
     send_mouse(flags, 0, 0, scaled_amount)
 }
 
+fn normalize_text_for_injection(text: &str) -> Cow<'_, str> {
+    if text.contains('\r') {
+        Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+fn send_unicode_char(character: char) -> Result<()> {
+    let mut buffer = [0; 2];
+
+    for &utf16_unit in character.encode_utf16(&mut buffer).iter() {
+        let inputs = [
+            keyboard_input(KEYEVENTF_UNICODE, VIRTUAL_KEY(0), utf16_unit),
+            keyboard_input(
+                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                VIRTUAL_KEY(0),
+                utf16_unit,
+            ),
+        ];
+
+        send_inputs(&inputs)?;
+    }
+
+    Ok(())
+}
+
+fn keyboard_input(flags: KEYBD_EVENT_FLAGS, vk: VIRTUAL_KEY, scan: u16) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
 fn send_mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: i32) -> Result<()> {
     let input = INPUT {
         r#type: INPUT_MOUSE,
@@ -360,11 +421,17 @@ fn send_mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: i32) -> Re
         },
     };
 
-    let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
-    if sent == 0 {
-        Err(anyhow!("SendInput returned 0"))
-    } else {
+    send_inputs(&[input])
+}
+
+fn send_inputs(inputs: &[INPUT]) -> Result<()> {
+    let expected = u32::try_from(inputs.len()).context("too many input events to inject")?;
+    let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
+
+    if sent == expected {
         Ok(())
+    } else {
+        Err(anyhow!("SendInput sent {sent} of {expected} events"))
     }
 }
 
@@ -434,7 +501,7 @@ fn default_click_count() -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_point;
+    use super::{normalize_point, normalize_text_for_injection};
     use crate::model::MonitorInfo;
 
     #[test]
@@ -456,5 +523,12 @@ mod tests {
         assert_eq!(top_left.y, 200);
         assert_eq!(bottom_right.x, 1699);
         assert_eq!(bottom_right.y, 1099);
+    }
+
+    #[test]
+    fn carriage_returns_are_normalized_before_text_injection() {
+        let normalized = normalize_text_for_injection("hello\r\nworld\rfrom\nrov");
+
+        assert_eq!(normalized, "hello\nworld\nfrom\nrov");
     }
 }
