@@ -47,6 +47,7 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
         .route("/api/status", get(status))
         .route("/api/frame.jpg", get(frame))
         .route("/api/input", post(input))
+        .route("/api/restart", post(restart))
         .with_state(state.clone());
 
     let address = SocketAddr::from(([0, 0, 0, 0], state.port()));
@@ -132,6 +133,12 @@ async fn input(
         .map_err(|err| (StatusCode::SERVICE_UNAVAILABLE, err.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn restart(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<StatusCode> {
+    authorize(&headers, &state)?;
+    state.request_restart();
+    Ok(StatusCode::ACCEPTED)
 }
 
 fn authorize(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {

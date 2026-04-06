@@ -333,6 +333,13 @@
       letter-spacing: 0.02em;
     }
 
+    .action.restart {
+      border-color: rgba(248, 113, 113, 0.35);
+      background:
+        linear-gradient(180deg, rgba(127, 29, 29, 0.72), rgba(69, 10, 10, 0.92)),
+        linear-gradient(180deg, rgba(22, 34, 53, 0.94), rgba(11, 18, 29, 0.96));
+    }
+
     .text-row {
       display: grid;
       gap: 10px;
@@ -532,6 +539,8 @@
           <textarea class="text-box" id="textInput" placeholder="Type text here" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
           <button class="action" id="sendTextBtn">Send Text</button>
         </div>
+
+        <button class="action restart" id="restartAppBtn">Restart Host App</button>
       </div>
 
       <div class="hud-bottom">
@@ -575,6 +584,7 @@
       frameReady: false,
       frameObjectUrl: null,
       sendingText: false,
+      restarting: false,
       textComposing: false,
       keyboardVisible: false,
       lastTextInputAt: 0
@@ -615,6 +625,7 @@
     const scrollModeBtn = document.getElementById("scrollModeBtn");
     const textInput = document.getElementById("textInput");
     const sendTextBtn = document.getElementById("sendTextBtn");
+    const restartAppBtn = document.getElementById("restartAppBtn");
     let viewportLayoutFrame = 0;
 
     boot();
@@ -808,6 +819,35 @@
           state.sendingText = false;
           sendTextBtn.disabled = false;
           sendTextBtn.textContent = "Send Text";
+        }
+      });
+
+      bindTap(restartAppBtn, async () => {
+        if (state.restarting) {
+          return;
+        }
+
+        state.restarting = true;
+        restartAppBtn.disabled = true;
+        restartAppBtn.textContent = "Restarting...";
+        setConnectionState("Restarting", "Rebuilding the host app", "warn");
+        showOverlay("Restarting host app", "ROV is shutting down and launching a fresh cargo run.");
+
+        try {
+          const response = await fetch("/api/restart", {
+            method: "POST",
+            headers: authHeaders()
+          });
+
+          if (!response.ok) {
+            throw new Error(`restart ${response.status}`);
+          }
+        } catch (error) {
+          state.restarting = false;
+          restartAppBtn.disabled = false;
+          restartAppBtn.textContent = "Restart Host App";
+          showOverlay("Restart failed", `Host restart request failed: ${error.message}`);
+          refreshStatus();
         }
       });
 

@@ -63,6 +63,8 @@ Notable current limitations:
 cargo run --release
 ```
 
+If you are iterating on the repo, the desktop app now includes a **Restart From Source** button and the mobile web client includes **Restart Host App**. Both shut down the current host process and start a fresh `cargo run` from this repository so you do not need to kill and relaunch it manually after changes.
+
 ### Use it from iPhone
 
 1. Start Tailscale on the laptop and on the iPhone.
