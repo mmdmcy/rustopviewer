@@ -9,11 +9,10 @@ use std::{
 };
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE,
-        MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-        MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+        INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+        MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+        MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
     },
     WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -274,21 +273,10 @@ fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
 fn inject_text(enigo: &mut Enigo, text: &str) -> Result<()> {
     let normalized = normalize_text_for_injection(text);
 
-    for character in normalized.chars() {
-        match character {
-            '\n' => enigo
-                .key(Key::Return, Direction::Click)
-                .context("failed to inject a line break")?,
-            '\t' => enigo
-                .key(Key::Tab, Direction::Click)
-                .context("failed to inject a tab")?,
-            '\0' => return Err(anyhow!("text input contained a null byte")),
-            _ => send_unicode_char(character)
-                .with_context(|| format!("failed to inject character {character:?}"))?,
-        }
-    }
-
-    Ok(())
+    // Batch the whole string so Windows receives one coherent text burst.
+    enigo
+        .text(normalized.as_ref())
+        .context("failed to inject text input")
 }
 
 fn run_shortcut(enigo: &mut Enigo, keys: &[RemoteKey]) -> Result<()> {
@@ -369,40 +357,6 @@ fn normalize_text_for_injection(text: &str) -> Cow<'_, str> {
         Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
     } else {
         Cow::Borrowed(text)
-    }
-}
-
-fn send_unicode_char(character: char) -> Result<()> {
-    let mut buffer = [0; 2];
-
-    for &utf16_unit in character.encode_utf16(&mut buffer).iter() {
-        let inputs = [
-            keyboard_input(KEYEVENTF_UNICODE, VIRTUAL_KEY(0), utf16_unit),
-            keyboard_input(
-                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                VIRTUAL_KEY(0),
-                utf16_unit,
-            ),
-        ];
-
-        send_inputs(&inputs)?;
-    }
-
-    Ok(())
-}
-
-fn keyboard_input(flags: KEYBD_EVENT_FLAGS, vk: VIRTUAL_KEY, scan: u16) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: vk,
-                wScan: scan,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
     }
 }
 
