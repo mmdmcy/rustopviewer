@@ -10,7 +10,7 @@ use eframe::{
 
 use crate::{
     capture,
-    network::{self, ConnectionUrl, UrlSet},
+    network::{self, ConnectionUrl, RemoteAccessMode, TailscaleStatusSnapshot, UrlSet},
     state::AppState,
 };
 
@@ -44,9 +44,184 @@ impl RustOpViewerApp {
         }
     }
 
+    fn show_toast(&mut self, message: impl Into<String>) {
+        self.toast_message = Some((message.into(), Instant::now()));
+    }
+
     fn copy_text(&mut self, ctx: &egui::Context, label: &str, value: String) {
         ctx.copy_text(value);
-        self.toast_message = Some((format!("{label} copied"), Instant::now()));
+        self.show_toast(format!("{label} copied"));
+    }
+
+    fn enable_tailscale_https(&mut self) {
+        match network::enable_tailscale_https(self.state.port()) {
+            Ok(()) => {
+                self.refresh_urls();
+                self.show_toast(
+                    "Trusted Tailscale HTTPS is ready. Open the new HTTPS phone URL in Safari.",
+                );
+            }
+            Err(err) => {
+                self.show_toast(format!("Tailscale HTTPS setup failed: {err}"));
+            }
+        }
+    }
+
+    fn render_mobile_access_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let status = self.urls.tailscale_status.clone();
+        let mobile_url = self.urls.mobile_data_preferred.clone();
+        let https_url = self.urls.tailscale_https.clone();
+        let serve_command = format!("tailscale serve --bg --yes {}", self.state.port());
+        let (headline, detail, accent) = remote_access_copy(&status);
+
+        ui.heading("Away From Home");
+        ui.label(
+            RichText::new("Use this when the phone is on mobile data or a different Wi-Fi.")
+                .color(Color32::from_rgb(148, 163, 184)),
+        );
+        ui.add_space(6.0);
+        ui.label(RichText::new(headline).color(accent).strong());
+        ui.label(RichText::new(detail).color(Color32::from_rgb(226, 232, 240)));
+
+        if let Some(url) = mobile_url.as_ref() {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Best phone URL")
+                    .color(Color32::from_rgb(148, 163, 184))
+                    .strong(),
+            );
+            render_url_row(ui, ctx, &mut self.toast_message, url);
+        }
+
+        if let Some(url) = https_url.as_ref().filter(|candidate| {
+            mobile_url
+                .as_ref()
+                .is_none_or(|selected| selected.url != candidate.url)
+        }) {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Trusted HTTPS URL")
+                    .color(Color32::from_rgb(148, 163, 184))
+                    .strong(),
+            );
+            render_url_row(ui, ctx, &mut self.toast_message, url);
+        }
+
+        if let Some(tailnet_name) = status.tailnet_name.as_deref() {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!("Tailnet: {tailnet_name}"))
+                    .small()
+                    .color(Color32::from_rgb(148, 163, 184)),
+            );
+        }
+
+        if let Some(host_name) = status.host_name.as_deref() {
+            ui.label(
+                RichText::new(format!("Laptop name on Tailscale: {host_name}"))
+                    .small()
+                    .color(Color32::from_rgb(148, 163, 184)),
+            );
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Copy Phone URL").clicked() {
+                if let Some(url) = mobile_url.as_ref() {
+                    self.copy_text(ctx, "Phone URL", url.url.clone());
+                } else {
+                    self.show_toast(
+                        "No off-LAN phone URL is available yet. Start Tailscale first.",
+                    );
+                }
+            }
+
+            let can_enable_https = status.is_running && status.magic_dns_enabled;
+            let https_button_label = if status.serve_enabled {
+                "Refresh HTTPS Status"
+            } else {
+                "Enable HTTPS for iPhone"
+            };
+
+            if ui
+                .add_enabled(can_enable_https, egui::Button::new(https_button_label))
+                .clicked()
+            {
+                if status.serve_enabled {
+                    self.refresh_urls();
+                    self.show_toast("HTTPS status refreshed");
+                } else {
+                    self.enable_tailscale_https();
+                }
+            }
+        });
+
+        match status.remote_access_mode() {
+            RemoteAccessMode::ReadyHttps => {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(
+                        "Safari can open the HTTPS link directly while the phone stays on mobile data.",
+                    )
+                    .small()
+                    .color(Color32::from_rgb(100, 116, 139)),
+                );
+            }
+            RemoteAccessMode::ReadyTailscale => {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(
+                        "Off-LAN access already works over Tailscale. The HTTPS button above just removes the browser warning in Safari.",
+                    )
+                    .small()
+                    .color(Color32::from_rgb(100, 116, 139)),
+                );
+            }
+            RemoteAccessMode::NeedsTailscaleLogin => {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(
+                        "Open Tailscale on the Windows laptop and the phone, then sign them into the same tailnet before trying the remote URL.",
+                    )
+                    .small()
+                    .color(Color32::from_rgb(100, 116, 139)),
+                );
+            }
+            RemoteAccessMode::NeedsTailscaleInstall => {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(
+                        "This project uses Tailscale as the safe off-LAN path. Without it, the app stays limited to the local network.",
+                    )
+                    .small()
+                    .color(Color32::from_rgb(100, 116, 139)),
+                );
+            }
+            RemoteAccessMode::LanOnly => {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(
+                        "Tailscale is installed, but the laptop has not published a usable tailnet name or IP yet.",
+                    )
+                    .small()
+                    .color(Color32::from_rgb(100, 116, 139)),
+                );
+            }
+        }
+
+        if status.is_running && !status.serve_enabled {
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(&serve_command)
+                        .monospace()
+                        .color(Color32::from_rgb(191, 219, 254)),
+                );
+                if ui.small_button("Copy").clicked() {
+                    self.copy_text(ctx, "Tailscale HTTPS command", serve_command.clone());
+                }
+            });
+        }
     }
 }
 
@@ -55,6 +230,15 @@ impl App for RustOpViewerApp {
         self.maybe_refresh_urls();
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(400));
+
+        let preferred_url = self.urls.preferred.clone();
+        let mobile_url = self.urls.mobile_data_preferred.clone();
+        let tailscale_dns = self.urls.tailscale_dns.clone();
+        let tailscale_https = self.urls.tailscale_https.clone();
+        let tailscale_urls = self.urls.tailscale.clone();
+        let lan_urls = self.urls.lan.clone();
+        let loopback_url = self.urls.loopback.clone();
+        let tailscale_status = self.urls.tailscale_status.clone();
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -65,7 +249,7 @@ impl App for RustOpViewerApp {
                 );
                 ui.label(
                     RichText::new(
-                        "Remote desktop viewing and full mouse/keyboard control for Windows 11 over Tailscale or your LAN.",
+                        "Remote desktop viewing and full mouse/keyboard control for Windows 11 over Tailscale, including when the phone is on mobile data.",
                     )
                     .size(15.0)
                     .color(Color32::from_rgb(148, 163, 184)),
@@ -73,7 +257,7 @@ impl App for RustOpViewerApp {
             });
 
             if let Some((message, created_at)) = &self.toast_message
-                && created_at.elapsed() < Duration::from_secs(2)
+                && created_at.elapsed() < Duration::from_secs(3)
             {
                 ui.add_space(8.0);
                 ui.label(
@@ -119,8 +303,10 @@ impl App for RustOpViewerApp {
 
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new("Use a Tailscale URL below from Safari on your iPhone for remote access away from home.")
-                            .color(Color32::from_rgb(226, 232, 240)),
+                        RichText::new(
+                            "When Tailscale is active, the phone can keep using ROV even away from the laptop's Wi-Fi.",
+                        )
+                        .color(Color32::from_rgb(226, 232, 240)),
                     );
                 });
 
@@ -132,7 +318,9 @@ impl App for RustOpViewerApp {
                     let selected_text = self
                         .state
                         .selected_monitor()
-                        .map(|monitor| format!("{} • {}", monitor.display_name(), monitor.resolution_label()))
+                        .map(|monitor| {
+                            format!("{} • {}", monitor.display_name(), monitor.resolution_label())
+                        })
                         .unwrap_or_else(|| "No display detected".to_string());
 
                     egui::ComboBox::from_id_salt("monitor-select")
@@ -155,8 +343,7 @@ impl App for RustOpViewerApp {
                                 if response.clicked()
                                     && let Err(err) = self.state.set_selected_monitor(monitor.id)
                                 {
-                                    self.toast_message =
-                                        Some((format!("Failed to save monitor: {err}"), Instant::now()));
+                                    self.show_toast(format!("Failed to save monitor: {err}"));
                                 }
                             }
                         });
@@ -167,17 +354,11 @@ impl App for RustOpViewerApp {
                                 Ok(monitors) => {
                                     self.state.set_monitors(monitors);
                                     if let Err(err) = self.state.ensure_valid_selected_monitor() {
-                                        self.toast_message = Some((
-                                            format!("Monitor refresh failed: {err}"),
-                                            Instant::now(),
-                                        ));
+                                        self.show_toast(format!("Monitor refresh failed: {err}"));
                                     }
                                 }
                                 Err(err) => {
-                                    self.toast_message = Some((
-                                        format!("Monitor refresh failed: {err}"),
-                                        Instant::now(),
-                                    ));
+                                    self.show_toast(format!("Monitor refresh failed: {err}"));
                                 }
                             }
                         }
@@ -186,16 +367,12 @@ impl App for RustOpViewerApp {
                             match self.state.regenerate_auth_token() {
                                 Ok(_) => {
                                     self.refresh_urls();
-                                    self.toast_message = Some((
-                                        "Phone link rotated; old links now stop working".to_string(),
-                                        Instant::now(),
-                                    ));
+                                    self.show_toast(
+                                        "Phone link rotated; old links now stop working",
+                                    );
                                 }
                                 Err(err) => {
-                                    self.toast_message = Some((
-                                        format!("Token rotation failed: {err}"),
-                                        Instant::now(),
-                                    ));
+                                    self.show_toast(format!("Token rotation failed: {err}"));
                                 }
                             }
                         }
@@ -217,34 +394,81 @@ impl App for RustOpViewerApp {
                 });
 
                 right.group(|ui| {
+                    self.render_mobile_access_panel(ui, &ctx);
+                });
+
+                right.add_space(12.0);
+                right.group(|ui| {
                     ui.heading("Connection URLs");
                     ui.label(
-                        RichText::new("Preferred direct URL (HTTP)")
+                        RichText::new("Best available URL")
                             .color(Color32::from_rgb(148, 163, 184))
                             .strong(),
                     );
-                    render_url_row(ui, &ctx, &mut self.toast_message, &self.urls.preferred);
+                    render_url_row(ui, &ctx, &mut self.toast_message, &preferred_url);
 
-                    if !self.urls.tailscale.is_empty() {
+                    if let Some(url) = mobile_url.as_ref().filter(|candidate| {
+                        candidate.url != preferred_url.url
+                    }) {
                         ui.add_space(10.0);
                         ui.label(
-                            RichText::new("Tailscale")
+                            RichText::new("Best phone URL")
                                 .color(Color32::from_rgb(148, 163, 184))
                                 .strong(),
                         );
-                        for url in &self.urls.tailscale {
+                        render_url_row(ui, &ctx, &mut self.toast_message, url);
+                    }
+
+                    if let Some(url) = tailscale_https.as_ref().filter(|candidate| {
+                        candidate.url != preferred_url.url
+                            && mobile_url
+                                .as_ref()
+                                .is_none_or(|selected| selected.url != candidate.url)
+                    }) {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("Trusted HTTPS")
+                                .color(Color32::from_rgb(148, 163, 184))
+                                .strong(),
+                        );
+                        render_url_row(ui, &ctx, &mut self.toast_message, url);
+                    }
+
+                    if let Some(url) = tailscale_dns.as_ref().filter(|candidate| {
+                        candidate.url != preferred_url.url
+                            && mobile_url
+                                .as_ref()
+                                .is_none_or(|selected| selected.url != candidate.url)
+                    }) {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("MagicDNS over Tailscale")
+                                .color(Color32::from_rgb(148, 163, 184))
+                                .strong(),
+                        );
+                        render_url_row(ui, &ctx, &mut self.toast_message, url);
+                    }
+
+                    if !tailscale_urls.is_empty() {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("Tailscale IP URLs")
+                                .color(Color32::from_rgb(148, 163, 184))
+                                .strong(),
+                        );
+                        for url in &tailscale_urls {
                             render_url_row(ui, &ctx, &mut self.toast_message, url);
                         }
                     }
 
-                    if !self.urls.lan.is_empty() {
+                    if !lan_urls.is_empty() {
                         ui.add_space(10.0);
                         ui.label(
                             RichText::new("Local network")
                                 .color(Color32::from_rgb(148, 163, 184))
                                 .strong(),
                         );
-                        for url in &self.urls.lan {
+                        for url in &lan_urls {
                             render_url_row(ui, &ctx, &mut self.toast_message, url);
                         }
                     }
@@ -255,68 +479,38 @@ impl App for RustOpViewerApp {
                             .color(Color32::from_rgb(148, 163, 184))
                             .strong(),
                     );
-                    render_url_row(ui, &ctx, &mut self.toast_message, &self.urls.loopback);
+                    render_url_row(ui, &ctx, &mut self.toast_message, &loopback_url);
 
                     ui.horizontal(|ui| {
                         if ui.button("Refresh Network").clicked() {
                             self.refresh_urls();
                         }
 
-                        if ui.button("Copy Preferred URL").clicked() {
-                            self.copy_text(&ctx, "Preferred URL", self.urls.preferred.url.clone());
+                        if ui.button("Copy Best Available URL").clicked() {
+                            self.copy_text(&ctx, "Best available URL", preferred_url.url.clone());
                         }
                     });
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new("HTTPS via Tailscale Serve")
-                            .color(Color32::from_rgb(148, 163, 184))
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(
-                            "Enable MagicDNS and HTTPS certificates in Tailscale, then run this on the Windows host:",
-                        )
-                        .color(Color32::from_rgb(226, 232, 240)),
-                    );
-
-                    if let Some(url) = &self.urls.tailscale_https {
-                        render_url_row(ui, &ctx, &mut self.toast_message, url);
-                    }
-
-                    let serve_command = format!("tailscale serve --bg {}", self.state.port());
-                    ui.horizontal_wrapped(|ui| {
+                    if tailscale_status.is_running && !tailscale_status.magic_dns_enabled {
+                        ui.add_space(8.0);
                         ui.label(
-                            RichText::new(&serve_command)
-                                .monospace()
-                                .color(Color32::from_rgb(191, 219, 254)),
+                            RichText::new(
+                                "Enable MagicDNS in Tailscale for a stable browser hostname instead of only using 100.x.x.x URLs.",
+                            )
+                            .small()
+                            .color(Color32::from_rgb(100, 116, 139)),
                         );
-                        if ui.small_button("Copy").clicked() {
-                            self.copy_text(
-                                &ctx,
-                                "Tailscale Serve command",
-                                serve_command.clone(),
-                            );
-                        }
-                    });
-                    ui.label(
-                        RichText::new(
-                            "Tailscale will print a trusted https://...ts.net URL that proxies back to ROV locally.",
-                        )
-                        .small()
-                        .color(Color32::from_rgb(100, 116, 139)),
-                    );
+                    }
                 });
 
                 right.add_space(12.0);
                 right.group(|ui| {
                     ui.heading("How to Use It");
-                    ui.label("1. Start Tailscale on both the laptop and your iPhone.");
-                    ui.label("2. Open one of the direct Tailscale URLs above in Safari on the phone, or use the HTTPS Serve URL after you enable it.");
-                    ui.label("3. Tap the live image for left click, long-press for right click, and use Drag mode when you need to hold the mouse button down.");
-                    ui.label("4. Use the text box and shortcut buttons on the phone page for typing and common Windows commands.");
+                    ui.label("1. Start Tailscale on both the Windows laptop and the phone.");
+                    ui.label("2. When the phone is on mobile data or another Wi-Fi, copy the Best phone URL above and open it in Safari.");
+                    ui.label("3. If Safari shows the page as not secure, click Enable HTTPS for iPhone once on the laptop and then use the HTTPS URL.");
+                    ui.label("4. Tap the live image for left click, long-press for right click, and use Drag mode when you need to hold the mouse button down.");
+                    ui.label("5. Use the text box and shortcut buttons on the phone page for typing and common Windows commands.");
                     ui.add_space(10.0);
                     ui.label(
                         RichText::new(format!("Config file: {}", self.state.config_path().display()))
@@ -351,6 +545,36 @@ fn render_url_row(
             *toast_message = Some((format!("{} copied", connection.label), Instant::now()));
         }
     });
+}
+
+fn remote_access_copy(status: &TailscaleStatusSnapshot) -> (&'static str, &'static str, Color32) {
+    match status.remote_access_mode() {
+        RemoteAccessMode::ReadyHttps => (
+            "Ready for mobile data",
+            "Trusted HTTPS is already available through Tailscale Serve on this laptop.",
+            Color32::from_rgb(74, 222, 128),
+        ),
+        RemoteAccessMode::ReadyTailscale => (
+            "Ready over Tailscale",
+            "The phone can reach this laptop from another network right now. HTTPS is optional but recommended for Safari.",
+            Color32::from_rgb(74, 222, 128),
+        ),
+        RemoteAccessMode::NeedsTailscaleLogin => (
+            "Tailscale needs attention",
+            "Off-LAN access is blocked until this Windows laptop is signed into Tailscale and connected.",
+            Color32::from_rgb(245, 158, 11),
+        ),
+        RemoteAccessMode::NeedsTailscaleInstall => (
+            "Off-LAN access not configured",
+            "Install Tailscale on the laptop and phone, then sign both devices into the same tailnet.",
+            Color32::from_rgb(248, 113, 113),
+        ),
+        RemoteAccessMode::LanOnly => (
+            "Still LAN-only",
+            "The app is listening, but no usable Tailscale hostname or IP is available yet for mobile-data access.",
+            Color32::from_rgb(245, 158, 11),
+        ),
+    }
 }
 
 fn configure_theme(ctx: &egui::Context) {

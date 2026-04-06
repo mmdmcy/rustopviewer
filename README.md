@@ -1,12 +1,14 @@
 # rustopviewer
 
-RustOp Viewer, or **ROV**, is a Windows-first remote desktop viewer/controller written in Rust and optimized for controlling a Windows 11 laptop from an iPhone over Tailscale.
+RustOp Viewer, or **ROV**, is a Windows-first remote desktop viewer/controller written in Rust and optimized for controlling a Windows 11 laptop from an iPhone over Tailscale, including when the phone is on mobile data or another Wi-Fi network.
 
 ROV currently ships as:
 
 - A native Windows desktop app for the host machine
 - A built-in mobile web client served by the host itself
 - A secure, token-protected remote-control flow designed for personal tailnet use
+- In-app readiness checks for off-LAN access over Tailscale
+- One-click Tailscale HTTPS setup for Safari-friendly remote access
 
 ## Why ROV
 
@@ -28,7 +30,7 @@ ROV exists to make a very specific workflow feel good:
 - Keyboard shortcuts and plain-text input
 - Local view zoom and UI-hide modes on iPhone
 - Token-based API authentication
-- Tailscale-friendly access model
+- Tailscale-first access model for mobile data and off-LAN control
 
 ## Current Limitations
 
@@ -65,19 +67,23 @@ cargo run --release
 
 1. Start Tailscale on the laptop and on the iPhone.
 2. Launch ROV on the laptop.
-3. Copy one of the Tailscale URLs shown in the desktop app.
+3. Copy the "Best phone URL" shown in the desktop app.
 4. Open that URL in Safari on the iPhone.
 5. Use the remote page to view, tap, drag, scroll, type, and send shortcuts.
 
-### Optional: trusted HTTPS on iPhone
+### Recommended: trusted HTTPS on iPhone
 
 ROV itself serves plain HTTP on the laptop. If you want Safari to stop showing the page as not secure, the recommended setup is to keep ROV on local HTTP and put Tailscale Serve in front of it for TLS.
 
+You can now do this from inside the Windows app with the **Enable HTTPS for iPhone** button.
+
 1. Enable MagicDNS and HTTPS certificates in the Tailscale admin console.
-2. On the Windows host, run:
+2. In the Windows app, click **Enable HTTPS for iPhone**.
+
+If you prefer to do it manually on the Windows host, run:
 
 ```powershell
-tailscale serve --bg 45080
+tailscale serve --bg --yes 45080
 ```
 
 3. Tailscale will print an `https://...ts.net` URL for this machine.
@@ -118,7 +124,7 @@ cargo test --all-targets --all-features
 - Regenerating the secure link invalidates old URLs immediately.
 - Tailscale is the recommended network boundary for internet use.
 - Direct `http` inside a tailnet is acceptable for personal use because Tailscale still encrypts transport, but browsers will still warn because the page itself is not `https`.
-- The recommended browser-trusted HTTPS deployment is Tailscale Serve in front of the local ROV server.
+- The recommended browser-trusted HTTPS deployment is Tailscale Serve in front of the local ROV server, which the app can now enable for you.
 
 ## Roadmap Highlights
 
