@@ -76,7 +76,6 @@
         radial-gradient(circle at top, rgba(37, 99, 235, 0.08), transparent 36%),
         linear-gradient(180deg, rgba(6, 11, 18, 0.98), rgba(3, 7, 13, 1));
       box-shadow: var(--shadow);
-      touch-action: none;
       user-select: none;
     }
 
@@ -108,6 +107,7 @@
       align-items: center;
       justify-content: center;
       padding: var(--viewer-top-inset) 0 var(--viewer-bottom-inset);
+      touch-action: none;
     }
 
     body.focus-mode .screen-wrap {
@@ -176,11 +176,13 @@
 
     .hud-top,
     .hud-bottom,
-    .sheet {
+    .sheet,
+    .return-dock {
       position: absolute;
       left: 10px;
       right: 10px;
       z-index: 4;
+      touch-action: manipulation;
     }
 
     .hud-top {
@@ -366,6 +368,7 @@
 
     .return-dock {
       position: absolute;
+      left: auto;
       right: 12px;
       bottom: calc(env(safe-area-inset-bottom) + 12px);
       z-index: 6;
@@ -572,7 +575,9 @@
       frameReady: false,
       frameObjectUrl: null,
       sendingText: false,
-      textComposing: false
+      textComposing: false,
+      keyboardVisible: false,
+      lastTextInputAt: 0
     };
 
     const body = document.body;
@@ -669,8 +674,9 @@
       });
 
       bindTap(toolsToggleBtn, () => {
-        dismissKeyboard();
+        dismissKeyboard(false);
         state.toolsOpen = !state.toolsOpen;
+        state.keyboardVisible = false;
         syncUiState();
       });
 
@@ -689,8 +695,9 @@
       bindTap(uiToggleBtn, () => {
         state.uiHidden = !state.uiHidden;
         if (state.uiHidden) {
-          dismissKeyboard();
+          dismissKeyboard(true);
           state.toolsOpen = false;
+          state.keyboardVisible = false;
         }
         syncUiState();
       });
@@ -749,10 +756,32 @@
 
       textInput.addEventListener("compositionstart", () => {
         state.textComposing = true;
+        state.lastTextInputAt = Date.now();
       });
 
       textInput.addEventListener("compositionend", () => {
         state.textComposing = false;
+        state.lastTextInputAt = Date.now();
+      });
+
+      textInput.addEventListener("input", () => {
+        state.lastTextInputAt = Date.now();
+      });
+
+      textInput.addEventListener("focus", () => {
+        state.keyboardVisible = true;
+        state.toolsOpen = true;
+        state.uiHidden = false;
+        syncUiState();
+      });
+
+      textInput.addEventListener("blur", () => {
+        window.setTimeout(() => {
+          if (document.activeElement !== textInput) {
+            state.keyboardVisible = false;
+            syncUiState();
+          }
+        }, 0);
       });
 
       bindTap(sendTextBtn, async () => {
@@ -823,23 +852,14 @@
         return;
       }
 
-      let lastPointerActivationAt = 0;
+      let ignoreClickUntil = 0;
 
       element.addEventListener("pointerdown", (event) => {
         if (!isPrimaryActivation(event)) {
           return;
         }
 
-        cancelActivePointer();
-        event.stopPropagation();
-      });
-
-      element.addEventListener("pointerup", (event) => {
-        if (!isPrimaryActivation(event)) {
-          return;
-        }
-
-        lastPointerActivationAt = Date.now();
+        ignoreClickUntil = Date.now() + 700;
         event.preventDefault();
         event.stopPropagation();
         cancelActivePointer();
@@ -847,7 +867,7 @@
       });
 
       element.addEventListener("click", (event) => {
-        if (Date.now() - lastPointerActivationAt < 700) {
+        if (Date.now() < ignoreClickUntil) {
           event.preventDefault();
           event.stopPropagation();
           return;
@@ -873,6 +893,8 @@
       fullscreenBtn.textContent = state.focusMode ? "Exit Fill" : "Fill Screen";
       zoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
       quickZoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
+      keyboardBtn.classList.toggle("active", state.keyboardVisible);
+      quickKeyboardBtn.classList.toggle("active", state.keyboardVisible);
       directModeBtn.classList.toggle("active", !state.dragMode && !state.scrollMode);
       dragModeBtn.classList.toggle("active", state.dragMode);
       scrollModeBtn.classList.toggle("active", state.scrollMode);
@@ -1022,6 +1044,10 @@
         await wait(40);
       }
 
+      while (Date.now() - state.lastTextInputAt < 120) {
+        await wait(24);
+      }
+
       let previousValue = textInput.value;
       let stableFrames = 0;
       const deadline = Date.now() + 220;
@@ -1130,15 +1156,6 @@
         return;
       }
 
-      if (canPanView()) {
-        state.viewOffsetX = state.pointer.startOffsetX + (point.clientX - state.pointer.start.clientX);
-        state.viewOffsetY = state.pointer.startOffsetY + (point.clientY - state.pointer.start.clientY);
-        clampViewOffset();
-        applyViewTransform();
-        state.pointer.last = point;
-        return;
-      }
-
       const now = Date.now();
       if (state.pointer.moved && now - state.pointer.lastMoveAt >= MOVE_INTERVAL_MS) {
         state.pointer.lastMoveAt = now;
@@ -1164,12 +1181,6 @@
 
       if (state.dragMode) {
         sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "release" });
-        releaseTrackedPointer(event.pointerId);
-        state.pointer = null;
-        return;
-      }
-
-      if (canPanView() && state.pointer.moved) {
         releaseTrackedPointer(event.pointerId);
         state.pointer = null;
         return;
@@ -1242,7 +1253,12 @@
       state.pointer = null;
     }
 
-    function dismissKeyboard() {
+    function dismissKeyboard(closeTools) {
+      state.keyboardVisible = false;
+      if (closeTools) {
+        state.toolsOpen = false;
+      }
+
       if (document.activeElement === textInput) {
         textInput.blur();
       }
@@ -1250,38 +1266,35 @@
 
     function focusTextInput() {
       toolsSheet.scrollTop = 0;
+      toolsSheet.getBoundingClientRect();
       textInput.scrollIntoView({ block: "start", inline: "nearest" });
-      textInput.focus({ preventScroll: true });
+      textInput.focus();
+      textInput.click();
       const cursor = textInput.value.length;
       textInput.setSelectionRange(cursor, cursor);
     }
 
     function toggleKeyboard() {
-      const keyboardOpen = state.toolsOpen && !state.uiHidden && document.activeElement === textInput;
-      if (keyboardOpen) {
-        dismissKeyboard();
-        state.toolsOpen = false;
+      if (state.keyboardVisible) {
+        dismissKeyboard(true);
         syncUiState();
         return;
       }
 
       state.uiHidden = false;
       state.toolsOpen = true;
+      state.keyboardVisible = true;
       syncUiState();
       focusTextInput();
-      requestAnimationFrame(() => {
-        if (document.activeElement !== textInput) {
-          focusTextInput();
-        }
-      });
     }
 
     function toggleFocusMode(forceValue) {
       state.focusMode = typeof forceValue === "boolean" ? forceValue : !state.focusMode;
-      dismissKeyboard();
+      dismissKeyboard(false);
       if (state.focusMode) {
         state.uiHidden = true;
         state.toolsOpen = false;
+        state.keyboardVisible = false;
         requestBrowserFullscreen();
       } else {
         state.uiHidden = false;
@@ -1327,7 +1340,7 @@
     }
 
     function canPanView() {
-      return state.viewScale > 1.001 && !state.dragMode && !state.scrollMode;
+      return false;
     }
 
     function clampViewOffset() {
