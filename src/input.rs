@@ -9,10 +9,12 @@ use std::{
 };
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
-        MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-        MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
-        MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE,
+        MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_CONTROL,
+        VK_MENU, VK_SHIFT, VkKeyScanW,
     },
     WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -273,10 +275,21 @@ fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
 fn inject_text(enigo: &mut Enigo, text: &str) -> Result<()> {
     let normalized = normalize_text_for_injection(text);
 
-    // Batch the whole string so Windows receives one coherent text burst.
-    enigo
-        .text(normalized.as_ref())
-        .context("failed to inject text input")
+    for character in normalized.chars() {
+        match character {
+            '\n' => enigo
+                .key(Key::Return, Direction::Click)
+                .context("failed to inject a line break")?,
+            '\t' => enigo
+                .key(Key::Tab, Direction::Click)
+                .context("failed to inject a tab")?,
+            '\0' => return Err(anyhow!("text input contained a null byte")),
+            _ => send_text_character(character)
+                .with_context(|| format!("failed to inject character {character:?}"))?,
+        }
+    }
+
+    Ok(())
 }
 
 fn run_shortcut(enigo: &mut Enigo, keys: &[RemoteKey]) -> Result<()> {
@@ -357,6 +370,108 @@ fn normalize_text_for_injection(text: &str) -> Cow<'_, str> {
         Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
     } else {
         Cow::Borrowed(text)
+    }
+}
+
+fn send_text_character(character: char) -> Result<()> {
+    if let Some((vk, modifiers)) = map_character_to_virtual_key(character)? {
+        send_character_as_virtual_key(vk, modifiers)
+    } else {
+        send_unicode_char(character)
+    }
+}
+
+fn map_character_to_virtual_key(character: char) -> Result<Option<(VIRTUAL_KEY, u8)>> {
+    let code_unit = match u16::try_from(character as u32) {
+        Ok(code_unit) => code_unit,
+        Err(_) => return Ok(None),
+    };
+
+    let mapping = unsafe { VkKeyScanW(code_unit) };
+    if mapping == -1 {
+        return Ok(None);
+    }
+
+    let vk = VIRTUAL_KEY((mapping as u16) & 0x00ff);
+    let modifiers = ((mapping as u16) >> 8) as u8;
+    Ok(Some((vk, modifiers)))
+}
+
+fn send_character_as_virtual_key(vk: VIRTUAL_KEY, modifiers: u8) -> Result<()> {
+    press_text_modifiers(modifiers)?;
+
+    let send_result = send_inputs(&[
+        keyboard_input(KEYBD_EVENT_FLAGS(0), vk, 0),
+        keyboard_input(KEYEVENTF_KEYUP, vk, 0),
+    ]);
+    let release_result = release_text_modifiers(modifiers);
+
+    send_result.and(release_result)
+}
+
+fn press_text_modifiers(modifiers: u8) -> Result<()> {
+    for modifier in modifier_keys(modifiers) {
+        send_inputs(&[keyboard_input(KEYBD_EVENT_FLAGS(0), modifier, 0)])
+            .with_context(|| format!("failed to press modifier key {}", modifier.0))?;
+    }
+
+    Ok(())
+}
+
+fn release_text_modifiers(modifiers: u8) -> Result<()> {
+    for modifier in modifier_keys(modifiers).into_iter().rev() {
+        send_inputs(&[keyboard_input(KEYEVENTF_KEYUP, modifier, 0)])
+            .with_context(|| format!("failed to release modifier key {}", modifier.0))?;
+    }
+
+    Ok(())
+}
+
+fn modifier_keys(modifiers: u8) -> Vec<VIRTUAL_KEY> {
+    let mut keys = Vec::with_capacity(3);
+    if modifiers & 1 != 0 {
+        keys.push(VK_SHIFT);
+    }
+    if modifiers & 2 != 0 {
+        keys.push(VK_CONTROL);
+    }
+    if modifiers & 4 != 0 {
+        keys.push(VK_MENU);
+    }
+    keys
+}
+
+fn send_unicode_char(character: char) -> Result<()> {
+    let mut buffer = [0; 2];
+
+    for &utf16_unit in character.encode_utf16(&mut buffer).iter() {
+        let inputs = [
+            keyboard_input(KEYEVENTF_UNICODE, VIRTUAL_KEY(0), utf16_unit),
+            keyboard_input(
+                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                VIRTUAL_KEY(0),
+                utf16_unit,
+            ),
+        ];
+
+        send_inputs(&inputs)?;
+    }
+
+    Ok(())
+}
+
+fn keyboard_input(flags: KEYBD_EVENT_FLAGS, vk: VIRTUAL_KEY, scan: u16) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
     }
 }
 
