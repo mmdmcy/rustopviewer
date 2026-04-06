@@ -7,6 +7,7 @@ mod config;
 mod input;
 mod model;
 mod network;
+mod restart;
 mod server;
 mod state;
 

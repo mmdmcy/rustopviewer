@@ -11,6 +11,7 @@ use eframe::{
 use crate::{
     capture,
     network::{self, ConnectionUrl, RemoteAccessMode, TailscaleStatusSnapshot, UrlSet},
+    restart,
     state::AppState,
 };
 
@@ -19,6 +20,7 @@ pub struct RustOpViewerApp {
     urls: UrlSet,
     last_network_refresh: Instant,
     toast_message: Option<(String, Instant)>,
+    restart_in_progress: bool,
 }
 
 impl RustOpViewerApp {
@@ -30,6 +32,7 @@ impl RustOpViewerApp {
             state,
             last_network_refresh: Instant::now(),
             toast_message: None,
+            restart_in_progress: false,
         }
     }
 
@@ -63,6 +66,25 @@ impl RustOpViewerApp {
             }
             Err(err) => {
                 self.show_toast(format!("Tailscale HTTPS setup failed: {err}"));
+            }
+        }
+    }
+
+    fn trigger_source_restart(&mut self, ctx: &egui::Context) {
+        if self.restart_in_progress {
+            return;
+        }
+
+        self.restart_in_progress = true;
+
+        match restart::queue_source_restart() {
+            Ok(()) => {
+                self.show_toast("Restart queued. ROV is rebuilding from source.");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(err) => {
+                self.restart_in_progress = false;
+                self.show_toast(format!("Restart failed: {err}"));
             }
         }
     }
@@ -231,6 +253,10 @@ impl App for RustOpViewerApp {
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(400));
 
+        if self.state.take_restart_requested() {
+            self.trigger_source_restart(&ctx);
+        }
+
         let preferred_url = self.urls.preferred.clone();
         let mobile_url = self.urls.mobile_data_preferred.clone();
         let tailscale_dns = self.urls.tailscale_dns.clone();
@@ -375,6 +401,10 @@ impl App for RustOpViewerApp {
                                     self.show_toast(format!("Token rotation failed: {err}"));
                                 }
                             }
+                        }
+
+                        if ui.button("Restart From Source").clicked() {
+                            self.trigger_source_restart(&ctx);
                         }
                     });
 

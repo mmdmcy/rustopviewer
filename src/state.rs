@@ -2,7 +2,11 @@ use anyhow::{Result, anyhow};
 use parking_lot::RwLock;
 use std::{
     path::PathBuf,
-    sync::{Arc, mpsc::Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
 };
 
 use crate::{
@@ -18,6 +22,7 @@ pub struct AppState {
     latest_frame: RwLock<Option<LatestFrame>>,
     capture_error: RwLock<Option<String>>,
     input_tx: Sender<InputCommand>,
+    restart_requested: AtomicBool,
 }
 
 impl AppState {
@@ -36,6 +41,7 @@ impl AppState {
             latest_frame: RwLock::new(None),
             capture_error: RwLock::new(None),
             input_tx,
+            restart_requested: AtomicBool::new(false),
         })
     }
 
@@ -146,6 +152,14 @@ impl AppState {
 
     pub fn config_path(&self) -> PathBuf {
         self.config_store.path().to_path_buf()
+    }
+
+    pub fn request_restart(&self) {
+        self.restart_requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_restart_requested(&self) -> bool {
+        self.restart_requested.swap(false, Ordering::SeqCst)
     }
 }
 
