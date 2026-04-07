@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
-use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -15,20 +14,22 @@ const DEFAULT_MAX_FRAME_WIDTH: u32 = 1800;
 #[serde(default)]
 pub struct AppConfig {
     pub port: u16,
-    pub auth_token: String,
     pub selected_monitor_id: Option<u32>,
     pub jpeg_quality: u8,
     pub max_frame_width: u32,
+    pub remote_pointer_enabled: bool,
+    pub remote_keyboard_enabled: bool,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             port: DEFAULT_PORT,
-            auth_token: generate_auth_token(),
             selected_monitor_id: None,
             jpeg_quality: DEFAULT_JPEG_QUALITY,
             max_frame_width: DEFAULT_MAX_FRAME_WIDTH,
+            remote_pointer_enabled: false,
+            remote_keyboard_enabled: false,
         }
     }
 }
@@ -39,17 +40,8 @@ impl AppConfig {
             self.port = DEFAULT_PORT;
         }
 
-        if self.auth_token.trim().is_empty() {
-            self.auth_token = generate_auth_token();
-        }
-
         self.jpeg_quality = self.jpeg_quality.clamp(35, 90);
         self.max_frame_width = self.max_frame_width.clamp(720, 1920);
-    }
-
-    pub fn regenerate_auth_token(&mut self) -> String {
-        self.auth_token = generate_auth_token();
-        self.auth_token.clone()
     }
 }
 
@@ -107,8 +99,4 @@ impl ConfigStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
-}
-
-fn generate_auth_token() -> String {
-    Alphanumeric.sample_string(&mut rand::rng(), 32)
 }

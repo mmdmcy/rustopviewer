@@ -47,4 +47,9 @@ pub struct StatusResponse {
     pub source_height: Option<u32>,
     pub last_frame_age_ms: Option<u128>,
     pub capture_error: Option<String>,
+    pub remote_pointer_enabled: bool,
+    pub remote_keyboard_enabled: bool,
+    pub host_elevated: bool,
+    pub session_expires_in_ms: Option<u128>,
+    pub session_idle_expires_in_ms: Option<u128>,
 }

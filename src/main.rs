@@ -7,6 +7,8 @@ mod config;
 mod input;
 mod model;
 mod network;
+mod platform;
+mod security;
 mod server;
 mod state;
 
@@ -27,8 +29,15 @@ fn main() -> Result<()> {
     let config = config_store.load_or_create()?;
     let monitors = capture::discover_monitors().context("failed to enumerate monitors")?;
     let input_tx = input::spawn_input_worker().context("failed to start input worker")?;
+    let is_elevated = platform::is_process_elevated();
 
-    let state = Arc::new(AppState::new(config_store, config, monitors, input_tx)?);
+    let state = Arc::new(AppState::new(
+        config_store,
+        config,
+        monitors,
+        input_tx,
+        is_elevated,
+    )?);
     state
         .ensure_valid_selected_monitor()
         .context("failed to select an active monitor")?;
