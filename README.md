@@ -6,7 +6,7 @@ ROV currently ships as:
 
 - A native Windows desktop app for the host machine
 - A built-in mobile web client served by the host itself
-- A secure, token-protected remote-control flow designed for personal tailnet use
+- A host-approved pairing flow that exchanges one-time codes for short-lived sessions
 - In-app readiness checks for off-LAN access over Tailscale
 - One-click Tailscale HTTPS setup for Safari-friendly remote access
 
@@ -29,8 +29,8 @@ ROV exists to make a very specific workflow feel good:
 - Mouse move, click, drag, and wheel input
 - Keyboard shortcuts and plain-text input
 - Local button and two-finger view zoom with panning on iPhone
-- Token-based API authentication
-- Tailscale-first access model for mobile data and off-LAN control
+- View-only by default, with host-side toggles for remote pointer and keyboard control
+- Loopback-only host server with Tailscale Serve as the intended off-LAN path
 
 ## Current Limitations
 
@@ -40,7 +40,7 @@ Notable current limitations:
 
 - Windows only for the host
 - The Windows session must already be awake and unlocked
-- UAC or elevated windows work best when ROV runs as Administrator
+- Remote input is intentionally locked out while ROV runs as Administrator
 - No audio streaming
 - No clipboard sync
 - No file transfer
@@ -67,13 +67,15 @@ cargo run --release
 
 1. Start Tailscale on the laptop and on the iPhone.
 2. Launch ROV on the laptop.
-3. Copy the "Best phone URL" shown in the desktop app.
-4. Open that URL in Safari on the iPhone.
-5. Use the remote page to view, tap, drag, scroll, type, and send shortcuts.
+3. Click **Enable HTTPS for iPhone** if the phone URL is not ready yet.
+4. Copy the "Phone URL" shown in the desktop app.
+5. Open that URL in Safari on the iPhone.
+6. Generate a one-time pairing code on the Windows app and enter it on the phone.
+7. Use the remote page to view, and enable input scopes on the Windows app only when you need control.
 
 ### Recommended: trusted HTTPS on iPhone
 
-ROV itself serves plain HTTP on the laptop. If you want Safari to stop showing the page as not secure, the recommended setup is to keep ROV on local HTTP and put Tailscale Serve in front of it for TLS.
+ROV now keeps its own HTTP server on `127.0.0.1` and expects Tailscale Serve to sit in front of it for off-LAN access. This means the Rust app itself no longer exposes a LAN-facing remote-control socket by default.
 
 You can now do this from inside the Windows app with the **Enable HTTPS for iPhone** button.
 
@@ -119,12 +121,12 @@ cargo test --all-targets --all-features
 
 ## Security Model
 
-- The host app serves the remote client locally.
-- Remote API calls require the `X-Auth-Token` secret.
-- Regenerating the secure link invalidates old URLs immediately.
-- Tailscale is the recommended network boundary for internet use.
-- Direct `http` inside a tailnet is acceptable for personal use because Tailscale still encrypts transport, but browsers will still warn because the page itself is not `https`.
-- The recommended browser-trusted HTTPS deployment is Tailscale Serve in front of the local ROV server, which the app can now enable for you.
+- The host app listens on loopback only and is intended to be reached off-LAN through Tailscale Serve.
+- Opening the phone page is not enough to gain control. A new phone session must be paired with a one-time code generated on the Windows app.
+- Approved phone sessions are short-lived, cookie-based, and only one session is kept at a time.
+- Remote pointer and keyboard control both default to off; view-only mode is the safe starting state.
+- Running ROV as Administrator forces remote input back to view-only.
+- Tailscale remains the supported network boundary for off-LAN use; no-Tailscale off-LAN exposure is intentionally out of scope.
 
 ## Roadmap Highlights
 

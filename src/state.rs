@@ -9,6 +9,7 @@ use crate::{
     config::{AppConfig, ConfigStore},
     input::InputCommand,
     model::{LatestFrame, MonitorInfo, StatusResponse},
+    security::{PairCodeSnapshot, SessionAuthError, SessionGrant, SessionSnapshot, SessionStore},
 };
 
 pub struct AppState {
@@ -18,6 +19,8 @@ pub struct AppState {
     latest_frame: RwLock<Option<LatestFrame>>,
     capture_error: RwLock<Option<String>>,
     input_tx: Sender<InputCommand>,
+    sessions: RwLock<SessionStore>,
+    is_elevated: bool,
 }
 
 impl AppState {
@@ -26,6 +29,7 @@ impl AppState {
         mut config: AppConfig,
         monitors: Vec<MonitorInfo>,
         input_tx: Sender<InputCommand>,
+        is_elevated: bool,
     ) -> Result<Self> {
         config.normalize();
 
@@ -36,6 +40,8 @@ impl AppState {
             latest_frame: RwLock::new(None),
             capture_error: RwLock::new(None),
             input_tx,
+            sessions: RwLock::new(SessionStore::new()),
+            is_elevated,
         })
     }
 
@@ -55,8 +61,8 @@ impl AppState {
         self.config.read().port
     }
 
-    pub fn auth_token(&self) -> String {
-        self.config.read().auth_token.clone()
+    pub fn is_elevated(&self) -> bool {
+        self.is_elevated
     }
 
     pub fn selected_monitor_id(&self) -> Option<u32> {
@@ -71,6 +77,22 @@ impl AppState {
         )
     }
 
+    pub fn remote_pointer_enabled(&self) -> bool {
+        !self.is_elevated && self.config.read().remote_pointer_enabled
+    }
+
+    pub fn remote_keyboard_enabled(&self) -> bool {
+        !self.is_elevated && self.config.read().remote_keyboard_enabled
+    }
+
+    pub fn remote_pointer_requested(&self) -> bool {
+        self.config.read().remote_pointer_enabled
+    }
+
+    pub fn remote_keyboard_requested(&self) -> bool {
+        self.config.read().remote_keyboard_enabled
+    }
+
     pub fn set_selected_monitor(&self, monitor_id: u32) -> Result<()> {
         let mut config = self.config.write();
         config.selected_monitor_id = Some(monitor_id);
@@ -78,11 +100,86 @@ impl AppState {
         Ok(())
     }
 
-    pub fn regenerate_auth_token(&self) -> Result<String> {
+    pub fn set_remote_pointer_enabled(&self, enabled: bool) -> Result<()> {
+        if self.is_elevated && enabled {
+            return Err(anyhow!(
+                "remote pointer control stays disabled while the app is running as Administrator"
+            ));
+        }
+
         let mut config = self.config.write();
-        let token = config.regenerate_auth_token();
+        config.remote_pointer_enabled = enabled;
         self.config_store.save(&config)?;
-        Ok(token)
+        Ok(())
+    }
+
+    pub fn set_remote_keyboard_enabled(&self, enabled: bool) -> Result<()> {
+        if self.is_elevated && enabled {
+            return Err(anyhow!(
+                "remote keyboard control stays disabled while the app is running as Administrator"
+            ));
+        }
+
+        let mut config = self.config.write();
+        config.remote_keyboard_enabled = enabled;
+        self.config_store.save(&config)?;
+        Ok(())
+    }
+
+    pub fn panic_stop(&self) -> Result<()> {
+        {
+            let mut config = self.config.write();
+            config.remote_pointer_enabled = false;
+            config.remote_keyboard_enabled = false;
+            self.config_store.save(&config)?;
+        }
+
+        let mut sessions = self.sessions.write();
+        sessions.clear_pair_code();
+        sessions.clear_session();
+        Ok(())
+    }
+
+    pub fn generate_pair_code(&self) -> PairCodeSnapshot {
+        self.sessions.write().generate_pair_code()
+    }
+
+    pub fn current_pair_code(&self) -> Option<PairCodeSnapshot> {
+        self.sessions.write().pair_code_snapshot()
+    }
+
+    pub fn current_remote_session(&self) -> Option<SessionSnapshot> {
+        self.sessions.write().session_snapshot()
+    }
+
+    pub fn current_remote_user_agent(&self) -> Option<String> {
+        self.sessions
+            .read()
+            .current_user_agent()
+            .map(ToString::to_string)
+    }
+
+    pub fn revoke_remote_session(&self) {
+        self.sessions.write().clear_session();
+    }
+
+    pub fn issue_pairing_session(
+        &self,
+        code: &str,
+        user_agent: Option<String>,
+    ) -> Result<SessionGrant, crate::security::PairingError> {
+        self.sessions.write().exchange_pair_code(code, user_agent)
+    }
+
+    pub fn authorize_session(&self, session_id: &str) -> Result<SessionSnapshot, SessionAuthError> {
+        self.sessions.write().authorize_session(session_id)
+    }
+
+    pub fn authorize_input_session(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionSnapshot, SessionAuthError> {
+        self.sessions.write().authorize_input_session(session_id)
     }
 
     pub fn monitors(&self) -> Vec<MonitorInfo> {
@@ -119,7 +216,42 @@ impl AppState {
         self.capture_error.read().clone()
     }
 
+    pub fn ensure_remote_command_allowed(&self, command: &InputCommand) -> Result<()> {
+        if self.is_elevated {
+            return Err(anyhow!(
+                "remote input is locked because the Windows app is running as Administrator"
+            ));
+        }
+
+        match command {
+            InputCommand::Move { .. }
+            | InputCommand::Click { .. }
+            | InputCommand::Button { .. }
+            | InputCommand::Scroll { .. } => {
+                if self.remote_pointer_enabled() {
+                    Ok(())
+                } else {
+                    Err(anyhow!(
+                        "remote pointer control is disabled on the Windows app"
+                    ))
+                }
+            }
+            InputCommand::Text { .. }
+            | InputCommand::Key { .. }
+            | InputCommand::Shortcut { .. } => {
+                if self.remote_keyboard_enabled() {
+                    Ok(())
+                } else {
+                    Err(anyhow!(
+                        "remote keyboard, text, and shortcut input is disabled on the Windows app"
+                    ))
+                }
+            }
+        }
+    }
+
     pub fn send_input(&self, command: InputCommand) -> Result<()> {
+        self.ensure_remote_command_allowed(&command)?;
         self.input_tx
             .send(command)
             .map_err(|_| anyhow!("the input worker is no longer available"))
@@ -127,6 +259,7 @@ impl AppState {
 
     pub fn status_response(&self) -> StatusResponse {
         let frame = self.latest_frame();
+        let session = self.current_remote_session();
 
         StatusResponse {
             selected_monitor: self.selected_monitor(),
@@ -141,6 +274,15 @@ impl AppState {
                 .and_then(|frame| frame.captured_at.elapsed().ok())
                 .map(|elapsed| elapsed.as_millis()),
             capture_error: self.capture_error(),
+            remote_pointer_enabled: self.remote_pointer_enabled(),
+            remote_keyboard_enabled: self.remote_keyboard_enabled(),
+            host_elevated: self.is_elevated,
+            session_expires_in_ms: session
+                .as_ref()
+                .map(|session| session.expires_in.as_millis()),
+            session_idle_expires_in_ms: session
+                .as_ref()
+                .map(|session| session.idle_expires_in.as_millis()),
         }
     }
 

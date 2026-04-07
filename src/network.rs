@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
-use if_addrs::{IfAddr, get_if_addrs};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::BTreeSet, net::Ipv4Addr, process::Command};
+use std::{net::Ipv4Addr, process::Command};
 
 #[derive(Debug, Clone)]
 pub struct ConnectionUrl {
@@ -14,10 +13,7 @@ pub struct ConnectionUrl {
 pub struct UrlSet {
     pub preferred: ConnectionUrl,
     pub mobile_data_preferred: Option<ConnectionUrl>,
-    pub tailscale_dns: Option<ConnectionUrl>,
-    pub tailscale: Vec<ConnectionUrl>,
     pub tailscale_https: Option<ConnectionUrl>,
-    pub lan: Vec<ConnectionUrl>,
     pub loopback: ConnectionUrl,
     pub tailscale_status: TailscaleStatusSnapshot,
 }
@@ -59,10 +55,10 @@ impl TailscaleStatusSnapshot {
             RemoteAccessMode::NeedsTailscaleLogin
         } else if self.serve_enabled && self.dns_name.is_some() {
             RemoteAccessMode::ReadyHttps
-        } else if self.dns_name.is_some() || !self.tailscale_ips.is_empty() {
-            RemoteAccessMode::ReadyTailscale
+        } else if self.magic_dns_enabled && self.dns_name.is_some() {
+            RemoteAccessMode::NeedsServe
         } else {
-            RemoteAccessMode::LanOnly
+            RemoteAccessMode::LocalOnly
         }
     }
 }
@@ -70,26 +66,18 @@ impl TailscaleStatusSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteAccessMode {
     ReadyHttps,
-    ReadyTailscale,
+    NeedsServe,
     NeedsTailscaleLogin,
     NeedsTailscaleInstall,
-    LanOnly,
+    LocalOnly,
 }
 
-pub fn discover_urls(port: u16, token: &str) -> UrlSet {
-    let loopback = build_url("Local loopback", Ipv4Addr::LOCALHOST, port, token);
+pub fn discover_urls(port: u16) -> UrlSet {
+    let loopback = ConnectionUrl {
+        label: "Local loopback".to_string(),
+        url: format!("http://127.0.0.1:{port}/"),
+    };
     let tailscale_status = discover_tailscale_status();
-    let mut seen = BTreeSet::new();
-    let mut tailscale = Vec::new();
-    let mut lan = Vec::new();
-
-    let tailscale_dns = tailscale_status
-        .dns_name
-        .as_deref()
-        .map(|dns_name| ConnectionUrl {
-            label: "Tailscale MagicDNS".to_string(),
-            url: format!("http://{dns_name}:{port}/?token={token}"),
-        });
 
     let tailscale_https = tailscale_status
         .dns_name
@@ -97,61 +85,15 @@ pub fn discover_urls(port: u16, token: &str) -> UrlSet {
         .filter(|_| tailscale_status.serve_enabled)
         .map(|dns_name| ConnectionUrl {
             label: "Tailscale HTTPS".to_string(),
-            url: format!("https://{dns_name}/?token={token}"),
+            url: format!("https://{dns_name}/"),
         });
 
-    if let Ok(addresses) = get_if_addrs() {
-        for address in addresses {
-            let IfAddr::V4(v4) = address.addr else {
-                continue;
-            };
-
-            let ip = v4.ip;
-            if ip.is_loopback() || !seen.insert(ip) {
-                continue;
-            }
-
-            let entry = build_url(&format!("{} ({ip})", address.name), ip, port, token);
-            if is_tailscale(ip) {
-                tailscale.push(entry);
-            } else if ip.is_private() {
-                lan.push(entry);
-            }
-        }
-    }
-
-    for ip in tailscale_status.tailscale_ips.iter().copied() {
-        if seen.insert(ip) {
-            let label = tailscale_status
-                .host_name
-                .as_deref()
-                .map(|host_name| format!("Tailscale IP for {host_name} ({ip})"))
-                .unwrap_or_else(|| format!("Tailscale IP ({ip})"));
-            tailscale.push(build_url(&label, ip, port, token));
-        }
-    }
-
-    tailscale.sort_by(|a, b| a.label.cmp(&b.label));
-    lan.sort_by(|a, b| a.label.cmp(&b.label));
-
-    let mobile_data_preferred = if tailscale_status.serve_enabled {
-        tailscale_https.clone()
-    } else {
-        tailscale_dns.clone().or_else(|| tailscale.first().cloned())
-    };
-
-    let preferred = mobile_data_preferred
-        .clone()
-        .or_else(|| lan.first().cloned())
-        .unwrap_or_else(|| loopback.clone());
+    let preferred = tailscale_https.clone().unwrap_or_else(|| loopback.clone());
 
     UrlSet {
         preferred,
-        mobile_data_preferred,
-        tailscale_dns,
-        tailscale,
+        mobile_data_preferred: tailscale_https.clone(),
         tailscale_https,
-        lan,
         loopback,
         tailscale_status,
     }
@@ -160,18 +102,6 @@ pub fn discover_urls(port: u16, token: &str) -> UrlSet {
 pub fn enable_tailscale_https(port: u16) -> Result<()> {
     let port_text = port.to_string();
     run_tailscale_command(&["serve", "--bg", "--yes", &port_text]).map(|_| ())
-}
-
-pub fn is_tailscale(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
-}
-
-fn build_url(label: &str, ip: Ipv4Addr, port: u16, token: &str) -> ConnectionUrl {
-    ConnectionUrl {
-        label: label.to_string(),
-        url: format!("http://{ip}:{port}/?token={token}"),
-    }
 }
 
 fn discover_tailscale_status() -> TailscaleStatusSnapshot {
@@ -322,19 +252,10 @@ struct TailscaleTailnet {
 #[cfg(test)]
 mod tests {
     use super::{
-        RemoteAccessMode, TailscaleStatusSnapshot, is_tailscale, parse_tailscale_serve_enabled,
+        RemoteAccessMode, TailscaleStatusSnapshot, parse_tailscale_serve_enabled,
         parse_tailscale_status,
     };
     use std::net::Ipv4Addr;
-
-    #[test]
-    fn tailscale_range_detection_matches_cgnat_space() {
-        assert!(is_tailscale(Ipv4Addr::new(100, 64, 0, 1)));
-        assert!(is_tailscale(Ipv4Addr::new(100, 127, 255, 254)));
-        assert!(!is_tailscale(Ipv4Addr::new(100, 63, 255, 255)));
-        assert!(!is_tailscale(Ipv4Addr::new(100, 128, 0, 1)));
-        assert!(!is_tailscale(Ipv4Addr::new(192, 168, 1, 10)));
-    }
 
     #[test]
     fn tailscale_status_deserializes_mobile_ready_snapshot() {
@@ -398,7 +319,7 @@ mod tests {
             RemoteAccessMode::NeedsTailscaleLogin
         );
 
-        let direct_ready = TailscaleStatusSnapshot {
+        let serve_needed = TailscaleStatusSnapshot {
             is_installed: true,
             is_running: true,
             magic_dns_enabled: true,
@@ -406,13 +327,13 @@ mod tests {
             ..TailscaleStatusSnapshot::unavailable()
         };
         assert_eq!(
-            direct_ready.remote_access_mode(),
-            RemoteAccessMode::ReadyTailscale
+            serve_needed.remote_access_mode(),
+            RemoteAccessMode::NeedsServe
         );
 
         let https_ready = TailscaleStatusSnapshot {
             serve_enabled: true,
-            ..direct_ready
+            ..serve_needed
         };
         assert_eq!(
             https_ready.remote_access_mode(),

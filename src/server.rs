@@ -2,19 +2,24 @@ use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA},
+        header::{
+            CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, InvalidHeaderValue,
+            PRAGMA, REFERRER_POLICY, SET_COOKIE, USER_AGENT,
+        },
     },
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
+use serde::Deserialize;
 use std::{net::SocketAddr, sync::Arc, thread};
 use tokio::net::TcpListener;
 
 use crate::{
     input::{self, InputRequest},
+    security::{PairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME, SessionAuthError},
     state::AppState,
 };
 
@@ -44,12 +49,14 @@ pub fn spawn_server(state: Arc<AppState>) {
 async fn run_server(state: Arc<AppState>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/pair", post(pair))
         .route("/api/status", get(status))
         .route("/api/frame.jpg", get(frame))
         .route("/api/input", post(input))
+        .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state.clone());
 
-    let address = SocketAddr::from(([0, 0, 0, 0], state.port()));
+    let address = SocketAddr::from(([127, 0, 0, 1], state.port()));
     let listener = TcpListener::bind(address)
         .await
         .with_context(|| format!("failed to bind the remote control server on {address}"))?;
@@ -72,24 +79,53 @@ async fn index() -> Response {
         CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
-    headers.insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-    );
-    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    apply_security_headers(headers, true);
     response
 }
 
-async fn status(
+#[derive(Deserialize)]
+struct PairRequest {
+    code: String,
+}
+
+async fn pair(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-) -> ApiResult<Json<crate::model::StatusResponse>> {
-    authorize(&headers, &state)?;
-    Ok(Json(state.status_response()))
+    Json(request): Json<PairRequest>,
+) -> ApiResult<Response> {
+    let user_agent = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let grant = state
+        .issue_pairing_session(&request.code, user_agent)
+        .map_err(pairing_error_response)?;
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let secure_cookie = request_is_https(&headers);
+    let cookie_value = session_cookie_header(&grant.session_id, secure_cookie).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to create the session cookie".to_string(),
+        )
+    })?;
+    response.headers_mut().insert(SET_COOKIE, cookie_value);
+    apply_security_headers(response.headers_mut(), false);
+    Ok(response)
+}
+
+async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
+    authorize_session(&headers, &state)?;
+    let mut response = Json(state.status_response()).into_response();
+    apply_security_headers(response.headers_mut(), false);
+    Ok(response)
 }
 
 async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
-    authorize(&headers, &state)?;
+    authorize_session(&headers, &state)?;
 
     let frame = state.latest_frame().ok_or_else(|| {
         (
@@ -101,11 +137,7 @@ async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiRes
     let mut response = Response::new(Body::from(frame.jpeg.as_ref().clone()));
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
-    headers.insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-    );
-    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    apply_security_headers(headers, false);
 
     Ok(response)
 }
@@ -115,7 +147,7 @@ async fn input(
     headers: HeaderMap,
     Json(request): Json<InputRequest>,
 ) -> ApiResult<StatusCode> {
-    authorize(&headers, &state)?;
+    authorize_input_session(&headers, &state)?;
 
     let monitor = state.selected_monitor().ok_or_else(|| {
         (
@@ -129,24 +161,126 @@ async fn input(
 
     state
         .send_input(command)
-        .map_err(|err| (StatusCode::SERVICE_UNAVAILABLE, err.to_string()))?;
+        .map_err(|err| (StatusCode::FORBIDDEN, err.to_string()))?;
 
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn authorize(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
-    let provided = headers
-        .get("x-auth-token")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim);
-    let expected = state.auth_token();
+fn authorize_session(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
+    let session_id = session_cookie(headers)?;
+    state
+        .authorize_session(&session_id)
+        .map(|_| ())
+        .map_err(session_error_response)
+}
 
-    if provided == Some(expected.as_str()) {
-        Ok(())
-    } else {
-        Err((
+fn authorize_input_session(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
+    let session_id = session_cookie(headers)?;
+    state
+        .authorize_input_session(&session_id)
+        .map(|_| ())
+        .map_err(session_error_response)
+}
+
+fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
+    let cookies = headers
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "The remote session is missing or expired. Pair this phone again.".to_string(),
+            )
+        })?;
+
+    cookies
+        .split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.split_once('='))
+        .filter(|(name, _)| *name == SESSION_COOKIE_NAME)
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "The remote session is missing or expired. Pair this phone again.".to_string(),
+            )
+        })
+}
+
+fn session_error_response(error: SessionAuthError) -> (StatusCode, String) {
+    match error {
+        SessionAuthError::Missing | SessionAuthError::Invalid | SessionAuthError::Expired => (
             StatusCode::UNAUTHORIZED,
-            "Missing or invalid X-Auth-Token header".to_string(),
-        ))
+            "The remote session is missing or expired. Pair this phone again.".to_string(),
+        ),
+        SessionAuthError::RateLimited => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many remote input events were sent at once.".to_string(),
+        ),
+    }
+}
+
+fn pairing_error_response(error: PairingError) -> (StatusCode, String) {
+    match error {
+        PairingError::TooManyAttempts => (StatusCode::TOO_MANY_REQUESTS, error.to_string()),
+        PairingError::MissingCode | PairingError::InvalidCode => {
+            (StatusCode::BAD_REQUEST, error.to_string())
+        }
+        PairingError::NoActiveCode | PairingError::CodeExpired => {
+            (StatusCode::UNAUTHORIZED, error.to_string())
+        }
+    }
+}
+
+fn request_is_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("https"))
+        || headers
+            .get("forwarded")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().contains("proto=https"))
+}
+
+fn session_cookie_header(
+    session_id: &str,
+    secure: bool,
+) -> Result<HeaderValue, InvalidHeaderValue> {
+    let mut value = format!(
+        "{SESSION_COOKIE_NAME}={session_id}; HttpOnly; Path=/; SameSite=Strict; Max-Age={}",
+        SESSION_MAX_LIFETIME.as_secs()
+    );
+    if secure {
+        value.push_str("; Secure");
+    }
+    HeaderValue::from_str(&value)
+}
+
+fn apply_security_headers(headers: &mut HeaderMap, is_html: bool) {
+    headers.insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        "permissions-policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+
+    if is_html {
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            ),
+        );
     }
 }

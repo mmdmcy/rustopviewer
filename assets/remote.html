@@ -175,6 +175,42 @@
       font-size: 0.95rem;
     }
 
+    .pairing-panel {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+      text-align: left;
+    }
+
+    .pairing-panel[hidden] {
+      display: none !important;
+    }
+
+    .pair-code-input {
+      width: 100%;
+      min-height: 48px;
+      padding: 11px 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(6, 11, 18, 0.9);
+      color: var(--ink);
+      font-size: 1rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .pair-code-input::placeholder {
+      color: rgba(147, 167, 191, 0.75);
+      letter-spacing: 0.08em;
+    }
+
+    .pair-hint {
+      min-height: 1.2em;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
+
     .hud-top,
     .hud-bottom,
     .sheet,
@@ -486,6 +522,11 @@
         <div class="overlay-card">
           <strong id="overlayTitle">Waiting for the laptop</strong>
           <span id="overlayMessage">Open the newest phone URL from the Windows app if this does not clear on its own.</span>
+          <div class="pairing-panel" id="pairingPanel" hidden>
+            <input class="pair-code-input" id="pairCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Pairing code">
+            <button class="action" id="pairButton">Pair This Phone</button>
+            <div class="pair-hint" id="pairHint">Generate a fresh one-time pairing code on the Windows app.</div>
+          </div>
         </div>
       </div>
 
@@ -560,7 +601,6 @@
   </main>
 
   <script>
-    const TOKEN_STORAGE_KEY = "rustopviewer-auth-token";
     const FRAME_INTERVAL_MS = 220;
     const STATUS_INTERVAL_MS = 1800;
     const MOVE_INTERVAL_MS = 40;
@@ -569,7 +609,6 @@
     const SCROLL_STEP_PX = 24;
 
     const state = {
-      token: "",
       dragMode: false,
       scrollMode: false,
       toolsOpen: false,
@@ -579,13 +618,17 @@
       viewOffsetX: 0,
       viewOffsetY: 0,
       pointer: null,
+      touchScroll: null,
       touchGesture: null,
       frameReady: false,
       frameObjectUrl: null,
       sendingText: false,
       textComposing: false,
       keyboardVisible: false,
-      lastTextInputAt: 0
+      lastTextInputAt: 0,
+      pointerEnabled: false,
+      keyboardEnabled: false,
+      pairingBusy: false
     };
 
     const body = document.body;
@@ -596,6 +639,10 @@
     const frameOverlay = document.getElementById("frameOverlay");
     const overlayTitle = document.getElementById("overlayTitle");
     const overlayMessage = document.getElementById("overlayMessage");
+    const pairingPanel = document.getElementById("pairingPanel");
+    const pairCodeInput = document.getElementById("pairCodeInput");
+    const pairButton = document.getElementById("pairButton");
+    const pairHint = document.getElementById("pairHint");
     const connectionPill = document.getElementById("connectionPill");
     const connectionHint = document.getElementById("connectionHint");
     const monitorPill = document.getElementById("monitorPill");
@@ -630,7 +677,6 @@
     boot();
 
     function boot() {
-      state.token = resolveToken();
       bindControls();
       syncUiState();
       refreshStatus();
@@ -665,7 +711,7 @@
       window.visualViewport?.addEventListener("resize", scheduleViewportLayout);
       window.visualViewport?.addEventListener("scroll", scheduleViewportLayout);
 
-      [toolsSheet, textInput]
+      [toolsSheet, textInput, pairingPanel, pairCodeInput]
         .filter(Boolean)
         .forEach((element) => {
           ["pointerdown", "pointerup", "click"].forEach((eventName) => {
@@ -681,6 +727,17 @@
 
       bindTap(keyboardBtn, () => {
         toggleKeyboard();
+      });
+
+      bindTap(pairButton, () => {
+        attemptPairing();
+      });
+
+      pairCodeInput?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          attemptPairing();
+        }
       });
 
       bindTap(toolsToggleBtn, () => {
@@ -747,12 +804,18 @@
       });
 
       bindTap(directModeBtn, () => {
+        if (!state.pointerEnabled) {
+          return;
+        }
         state.dragMode = false;
         state.scrollMode = false;
         syncUiState();
       });
 
       bindTap(dragModeBtn, () => {
+        if (!state.pointerEnabled) {
+          return;
+        }
         state.dragMode = !state.dragMode;
         if (state.dragMode) {
           state.scrollMode = false;
@@ -761,6 +824,9 @@
       });
 
       bindTap(scrollModeBtn, () => {
+        if (!state.pointerEnabled) {
+          return;
+        }
         state.scrollMode = !state.scrollMode;
         if (state.scrollMode) {
           state.dragMode = false;
@@ -803,7 +869,7 @@
       });
 
       bindTap(sendTextBtn, async () => {
-        if (state.sendingText) {
+        if (state.sendingText || !state.keyboardEnabled) {
           return;
         }
 
@@ -831,6 +897,9 @@
 
       document.querySelectorAll("[data-shortcut]").forEach((button) => {
         bindTap(button, () => {
+          if (!state.keyboardEnabled) {
+            return;
+          }
           const keys = button.getAttribute("data-shortcut").split("+");
           sendCommand({ type: "shortcut", keys });
         });
@@ -838,6 +907,9 @@
 
       document.querySelectorAll("[data-key]").forEach((button) => {
         bindTap(button, () => {
+          if (!state.keyboardEnabled) {
+            return;
+          }
           const key = button.getAttribute("data-key");
           sendCommand({ type: "key", key });
         });
@@ -851,22 +923,6 @@
       frameSurface.addEventListener("touchmove", onTouchMove, { passive: false });
       frameSurface.addEventListener("touchend", onTouchEnd, { passive: false });
       frameSurface.addEventListener("touchcancel", onTouchCancel, { passive: false });
-    }
-
-    function resolveToken() {
-      const url = new URL(window.location.href);
-      const tokenFromQuery = url.searchParams.get("token");
-      if (tokenFromQuery) {
-        localStorage.setItem(TOKEN_STORAGE_KEY, tokenFromQuery);
-        url.searchParams.delete("token");
-        window.history.replaceState({}, "", url.toString());
-        return tokenFromQuery;
-      }
-      return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
-    }
-
-    function authHeaders() {
-      return state.token ? { "X-Auth-Token": state.token } : {};
     }
 
     function bindTap(element, handler) {
@@ -925,6 +981,14 @@
       resetViewBtn.hidden = !state.keyboardVisible && state.viewScale <= 1.001;
       syncViewUi();
       exitFullscreenBtn.hidden = !state.focusMode;
+      keyboardBtn.disabled = !state.keyboardEnabled;
+      quickKeyboardBtn.disabled = !state.keyboardEnabled;
+      toolsToggleBtn.disabled = !state.keyboardEnabled;
+      dragModeBtn.disabled = !state.pointerEnabled;
+      scrollModeBtn.disabled = !state.pointerEnabled;
+      directModeBtn.disabled = !state.pointerEnabled;
+      textInput.disabled = !state.keyboardEnabled;
+      sendTextBtn.disabled = state.sendingText || !state.keyboardEnabled;
       scheduleViewportLayout();
     }
 
@@ -937,25 +1001,18 @@
     }
 
     async function refreshStatus() {
-      if (!state.token) {
-        setConnectionState("Missing token", "Open the latest phone URL", "error");
-        if (!state.frameReady) {
-          showOverlay("Missing token", "Open the newest phone URL from the Windows app.");
-        }
-        return;
-      }
-
       try {
         const response = await fetch("/api/status", {
-          headers: authHeaders(),
-          cache: "no-store"
+          cache: "no-store",
+          credentials: "same-origin"
         });
 
         if (response.status === 401) {
-          setConnectionState("Unauthorized", "Open the latest phone URL", "error");
-          if (!state.frameReady) {
-            showOverlay("Unauthorized", "The saved token is no longer valid.");
-          }
+          state.pointerEnabled = false;
+          state.keyboardEnabled = false;
+          syncUiState();
+          setConnectionState("Pairing required", "Enter the one-time code from Windows", "warn");
+          showPairing("Pair this phone", "Enter the one-time pairing code shown on the Windows app.");
           return;
         }
 
@@ -964,6 +1021,9 @@
         }
 
         const payload = await response.json();
+        state.pointerEnabled = !!payload.remote_pointer_enabled;
+        state.keyboardEnabled = !!payload.remote_keyboard_enabled;
+        syncUiState();
         if (payload.selected_monitor) {
           const monitor = payload.selected_monitor;
           monitorPill.className = "pill";
@@ -987,9 +1047,14 @@
             showOverlay("Capture issue", payload.capture_error);
           }
         } else {
-          setConnectionState("Connected", "Live", "ok");
+          const modeLabel = payload.remote_pointer_enabled || payload.remote_keyboard_enabled
+            ? "Control scopes approved"
+            : "View only";
+          setConnectionState("Connected", modeLabel, payload.remote_pointer_enabled || payload.remote_keyboard_enabled ? "ok" : "warn");
           if (!payload.has_frame && !state.frameReady) {
             showOverlay("Waiting for frame", "The laptop is connected but has not delivered the first frame yet.");
+          } else if (state.frameReady) {
+            hideOverlay();
           }
         }
       } catch (error) {
@@ -1002,19 +1067,16 @@
 
     async function refreshFrame() {
       try {
-        if (!state.token) {
-          return;
-        }
-
         const response = await fetch(`/api/frame.jpg?ts=${Date.now()}`, {
-          headers: authHeaders(),
-          cache: "no-store"
+          cache: "no-store",
+          credentials: "same-origin"
         });
 
         if (response.status === 401) {
-          if (!state.frameReady) {
-            showOverlay("Unauthorized", "Open the latest phone URL from the Windows app.");
-          }
+          state.pointerEnabled = false;
+          state.keyboardEnabled = false;
+          syncUiState();
+          showPairing("Pair this phone", "Your remote session expired. Enter a fresh pairing code from Windows.");
           return;
         }
 
@@ -1097,7 +1159,7 @@
     }
 
     async function sendCommand(body) {
-      if (!state.token) {
+      if (!isCommandAllowed(body)) {
         return false;
       }
 
@@ -1105,11 +1167,21 @@
         const response = await fetch("/api/input", {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
-            ...authHeaders()
+            "Content-Type": "application/json"
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          credentials: "same-origin"
         });
+
+        if (response.status === 401) {
+          showPairing("Pair this phone", "Your remote session expired. Enter a fresh pairing code from Windows.");
+          return false;
+        }
+
+        if (response.status === 403) {
+          setConnectionState("View only", "Remote input is disabled on the Windows app", "warn");
+          return false;
+        }
 
         return response.ok;
       } catch {
@@ -1130,7 +1202,11 @@
     }
 
     function onPointerDown(event) {
-      if (!state.token || !state.frameReady) {
+      if (!state.pointerEnabled || !state.frameReady) {
+        return;
+      }
+
+      if (state.scrollMode && event.pointerType === "touch") {
         return;
       }
 
@@ -1167,6 +1243,10 @@
         scrollResidualY: 0
       };
 
+      if (state.scrollMode) {
+        sendCommand({ type: "move", x: point.x, y: point.y });
+      }
+
       if (state.dragMode) {
         sendCommand({ type: "button", x: point.x, y: point.y, button: "left", action: "press" });
       }
@@ -1185,22 +1265,8 @@
       }
 
       if (state.scrollMode) {
-        const deltaX = point.clientX - state.pointer.last.clientX;
-        const deltaY = point.clientY - state.pointer.last.clientY;
-        state.pointer.scrollResidualX += deltaX;
-        state.pointer.scrollResidualY += deltaY;
-        const horizontalScroll = consumeScrollSteps(state.pointer.scrollResidualX);
-        const verticalScroll = consumeScrollSteps(state.pointer.scrollResidualY);
-        state.pointer.scrollResidualX -= horizontalScroll.consumed;
-        state.pointer.scrollResidualY -= verticalScroll.consumed;
-        state.pointer.last = point;
-        if (horizontalScroll.steps || verticalScroll.steps) {
+        if (dispatchScrollMovement(state.pointer, point)) {
           state.pointer.moved = true;
-          sendCommand({
-            type: "scroll",
-            horizontal: horizontalScroll.steps,
-            vertical: verticalScroll.steps
-          });
         }
         return;
       }
@@ -1263,7 +1329,22 @@
     }
 
     function onTouchStart(event) {
-      if (!isScreenPointerTarget(event.target) || event.touches.length < 2) {
+      if (!state.pointerEnabled || !state.frameReady || !isScreenPointerTarget(event.target)) {
+        return;
+      }
+
+      if (event.touches.length === 1 && state.scrollMode) {
+        if (state.keyboardVisible) {
+          dismissKeyboard(false);
+          syncUiState();
+        }
+
+        event.preventDefault();
+        beginTouchScroll(event.touches[0]);
+        return;
+      }
+
+      if (event.touches.length < 2) {
         return;
       }
 
@@ -1277,6 +1358,23 @@
     }
 
     function onTouchMove(event) {
+      if (state.touchScroll) {
+        if (event.touches.length !== 1) {
+          endTouchScroll();
+          return;
+        }
+
+        const trackedTouch = findTrackedTouch(event.touches);
+        if (!trackedTouch) {
+          endTouchScroll();
+          return;
+        }
+
+        event.preventDefault();
+        updateTouchScroll(trackedTouch);
+        return;
+      }
+
       if (!state.touchGesture) {
         return;
       }
@@ -1291,6 +1389,12 @@
     }
 
     function onTouchEnd(event) {
+      if (state.touchScroll) {
+        event.preventDefault();
+        endTouchScroll();
+        return;
+      }
+
       if (!state.touchGesture) {
         return;
       }
@@ -1305,6 +1409,12 @@
     }
 
     function onTouchCancel(event) {
+      if (state.touchScroll) {
+        event.preventDefault();
+        endTouchScroll();
+        return;
+      }
+
       if (!state.touchGesture) {
         return;
       }
@@ -1328,14 +1438,22 @@
     }
 
     function pointFromEvent(event) {
+      return pointFromClient(event.clientX, event.clientY);
+    }
+
+    function pointFromTouch(touch) {
+      return pointFromClient(touch.clientX, touch.clientY);
+    }
+
+    function pointFromClient(clientX, clientY) {
       const rect = getInteractiveRect();
       const width = rect.width || 1;
       const height = rect.height || 1;
       return {
-        x: clamp((event.clientX - rect.left) / width, 0, 1),
-        y: clamp((event.clientY - rect.top) / height, 0, 1),
-        clientX: event.clientX,
-        clientY: event.clientY
+        x: clamp((clientX - rect.left) / width, 0, 1),
+        y: clamp((clientY - rect.top) / height, 0, 1),
+        clientX,
+        clientY
       };
     }
 
@@ -1356,6 +1474,7 @@
 
     function cancelActivePointer() {
       if (!state.pointer) {
+        endTouchScroll();
         return;
       }
 
@@ -1366,6 +1485,7 @@
 
       releaseTrackedPointer(state.pointer.pointerId);
       state.pointer = null;
+      endTouchScroll();
     }
 
     function dismissKeyboard(closeTools) {
@@ -1392,6 +1512,10 @@
     }
 
     function toggleKeyboard() {
+      if (!state.keyboardEnabled) {
+        return;
+      }
+
       if (state.keyboardVisible) {
         dismissKeyboard(true);
         syncUiState();
@@ -1616,7 +1740,95 @@
     function showOverlay(title, message) {
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
+       pairingPanel.hidden = true;
       frameOverlay.classList.remove("hidden");
+    }
+
+    function hideOverlay() {
+      frameOverlay.classList.add("hidden");
+      pairingPanel.hidden = true;
+    }
+
+    function showPairing(title, message, hint) {
+      overlayTitle.textContent = title;
+      overlayMessage.textContent = message;
+      pairHint.textContent = hint || "Generate a fresh one-time pairing code on the Windows app.";
+      pairingPanel.hidden = false;
+      frameOverlay.classList.remove("hidden");
+    }
+
+    async function attemptPairing() {
+      if (state.pairingBusy) {
+        return;
+      }
+
+      const code = pairCodeInput.value.trim();
+      if (!code) {
+        showPairing("Pair this phone", "Enter the one-time pairing code shown on the Windows app.", "Pairing requires the current one-time code from Windows.");
+        pairCodeInput.focus();
+        return;
+      }
+
+      state.pairingBusy = true;
+      pairButton.disabled = true;
+      pairButton.textContent = "Pairing...";
+      pairHint.textContent = "Checking the one-time code with the Windows app...";
+
+      try {
+        const response = await fetch("/api/pair", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ code }),
+          credentials: "same-origin"
+        });
+
+        if (response.ok) {
+          pairCodeInput.value = "";
+          pairHint.textContent = "Phone paired. Loading the live desktop...";
+          await refreshStatus();
+          await refreshFrame();
+          return;
+        }
+
+        const message = await response.text();
+        showPairing(
+          "Pair this phone",
+          "The Windows app did not accept that pairing attempt.",
+          message || "Generate a fresh one-time pairing code on the Windows app."
+        );
+      } catch (error) {
+        showPairing(
+          "Pair this phone",
+          "Pairing could not reach the Windows app.",
+          error.message || "Check the phone URL and try again."
+        );
+      } finally {
+        state.pairingBusy = false;
+        pairButton.disabled = false;
+        pairButton.textContent = "Pair This Phone";
+      }
+    }
+
+    function isCommandAllowed(body) {
+      if (!body || typeof body !== "object") {
+        return false;
+      }
+
+      switch (body.type) {
+        case "move":
+        case "click":
+        case "button":
+        case "scroll":
+          return state.pointerEnabled;
+        case "text":
+        case "key":
+        case "shortcut":
+          return state.keyboardEnabled;
+        default:
+          return false;
+      }
     }
 
     function setConnectionState(title, subtitle, kind) {
@@ -1646,6 +1858,62 @@
         secondTouch.clientX - firstTouch.clientX,
         secondTouch.clientY - firstTouch.clientY
       );
+    }
+
+    function beginTouchScroll(touch) {
+      cancelActivePointer();
+      const point = pointFromTouch(touch);
+      state.touchScroll = {
+        identifier: touch.identifier,
+        start: point,
+        last: point,
+        scrollResidualX: 0,
+        scrollResidualY: 0
+      };
+      sendCommand({ type: "move", x: point.x, y: point.y });
+    }
+
+    function updateTouchScroll(touch) {
+      if (!state.touchScroll) {
+        return;
+      }
+
+      dispatchScrollMovement(state.touchScroll, pointFromTouch(touch));
+    }
+
+    function endTouchScroll() {
+      state.touchScroll = null;
+    }
+
+    function findTrackedTouch(touches) {
+      if (!state.touchScroll) {
+        return null;
+      }
+
+      return Array.from(touches).find((touch) => touch.identifier === state.touchScroll.identifier) || null;
+    }
+
+    function dispatchScrollMovement(tracker, point) {
+      const deltaX = point.clientX - tracker.last.clientX;
+      const deltaY = point.clientY - tracker.last.clientY;
+      tracker.scrollResidualX += deltaX;
+      tracker.scrollResidualY += deltaY;
+      const horizontalScroll = consumeScrollSteps(tracker.scrollResidualX);
+      const verticalScroll = consumeScrollSteps(tracker.scrollResidualY);
+      tracker.scrollResidualX -= horizontalScroll.consumed;
+      tracker.scrollResidualY -= verticalScroll.consumed;
+      tracker.last = point;
+
+      if (!horizontalScroll.steps && !verticalScroll.steps) {
+        return false;
+      }
+
+      sendCommand({
+        type: "scroll",
+        horizontal: horizontalScroll.steps,
+        vertical: verticalScroll.steps
+      });
+      return true;
     }
 
     function consumeScrollSteps(delta) {

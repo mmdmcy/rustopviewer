@@ -24,6 +24,9 @@ use windows::Win32::UI::{
 
 use crate::model::MonitorInfo;
 
+const MAX_TEXT_INPUT_CHARS: usize = 512;
+const MAX_SHORTCUT_KEYS: usize = 4;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScreenPoint {
     pub x: i32,
@@ -218,9 +221,26 @@ pub fn command_from_request(request: InputRequest, monitor: &MonitorInfo) -> Res
             horizontal,
             vertical,
         },
-        InputRequest::Text { text } => InputCommand::Text { text },
+        InputRequest::Text { text } => {
+            if text.chars().count() > MAX_TEXT_INPUT_CHARS {
+                return Err(anyhow!(
+                    "text input is limited to {MAX_TEXT_INPUT_CHARS} characters per request"
+                ));
+            }
+            InputCommand::Text { text }
+        }
         InputRequest::Key { key, action } => InputCommand::Key { key, action },
-        InputRequest::Shortcut { keys } => InputCommand::Shortcut { keys },
+        InputRequest::Shortcut { keys } => {
+            if keys.is_empty() {
+                return Err(anyhow!("shortcut requests must include at least one key"));
+            }
+            if keys.len() > MAX_SHORTCUT_KEYS {
+                return Err(anyhow!(
+                    "shortcut requests are limited to {MAX_SHORTCUT_KEYS} keys"
+                ));
+            }
+            InputCommand::Shortcut { keys }
+        }
     })
 }
 
