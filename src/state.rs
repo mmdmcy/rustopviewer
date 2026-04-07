@@ -328,7 +328,7 @@ impl AppState {
                 .map(|session| session.expires_in.as_millis()),
             session_idle_expires_in_ms: session
                 .as_ref()
-                .map(|session| session.idle_expires_in.as_millis()),
+                .and_then(|session| session.idle_expires_in.map(|duration| duration.as_millis())),
             session_bytes_sent: session.as_ref().map(|session| session.bytes_sent),
             session_frame_responses: session.as_ref().map(|session| session.frame_responses),
             session_cached_frame_hits: session.as_ref().map(|session| session.cached_frame_hits),

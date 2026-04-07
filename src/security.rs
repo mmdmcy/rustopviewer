@@ -8,8 +8,7 @@ pub const SESSION_COOKIE_NAME: &str = "rov_session";
 pub const MAX_PAIR_ATTEMPTS: u8 = 5;
 pub const MAX_INPUTS_PER_SECOND: u16 = 90;
 pub const PAIR_CODE_TTL: Duration = Duration::from_secs(2 * 60);
-pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(4 * 60 * 60);
+pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct PairCodeSnapshot {
@@ -21,7 +20,7 @@ pub struct PairCodeSnapshot {
 #[derive(Debug, Clone)]
 pub struct SessionSnapshot {
     pub expires_in: Duration,
-    pub idle_expires_in: Duration,
+    pub idle_expires_in: Option<Duration>,
     pub bytes_sent: u64,
     pub frame_responses: u64,
     pub cached_frame_hits: u64,
@@ -305,14 +304,13 @@ struct RemoteSession {
 
 impl RemoteSession {
     fn is_expired(&self, now: SystemTime) -> bool {
-        now >= self.expires_at || elapsed_since(self.last_seen_at, now) >= SESSION_IDLE_TIMEOUT
+        now >= self.expires_at
     }
 
     fn snapshot(&self, now: SystemTime) -> SessionSnapshot {
-        let idle_expires_at = self.last_seen_at + SESSION_IDLE_TIMEOUT;
         SessionSnapshot {
             expires_in: duration_until(self.expires_at, now),
-            idle_expires_in: duration_until(idle_expires_at, now),
+            idle_expires_in: None,
             bytes_sent: self.bytes_sent,
             frame_responses: self.frame_responses,
             cached_frame_hits: self.cached_frame_hits,
@@ -348,4 +346,42 @@ fn duration_until(target: SystemTime, now: SystemTime) -> Duration {
 
 fn elapsed_since(start: SystemTime, end: SystemTime) -> Duration {
     end.duration_since(start).unwrap_or(Duration::ZERO)
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::{RemoteSession, SESSION_MAX_LIFETIME};
+    use std::time::{Duration, SystemTime};
+
+    fn sample_session(now: SystemTime) -> RemoteSession {
+        RemoteSession {
+            id: "test-session".to_string(),
+            expires_at: now + SESSION_MAX_LIFETIME,
+            last_seen_at: now - Duration::from_secs(9 * 60 * 60),
+            input_window_started_at: now,
+            input_count_in_window: 0,
+            user_agent: None,
+            bytes_sent: 0,
+            frame_responses: 0,
+            cached_frame_hits: 0,
+            status_responses: 0,
+        }
+    }
+
+    #[test]
+    fn remembered_session_does_not_idle_out() {
+        let now = SystemTime::now();
+        let session = sample_session(now);
+        let later = now + Duration::from_secs(10 * 60 * 60);
+        assert!(!session.is_expired(later));
+        assert!(session.snapshot(later).idle_expires_in.is_none());
+    }
+
+    #[test]
+    fn remembered_session_still_expires_at_max_lifetime() {
+        let now = SystemTime::now();
+        let mut session = sample_session(now);
+        session.expires_at = now + Duration::from_secs(5);
+        assert!(session.is_expired(now + Duration::from_secs(6)));
+    }
 }

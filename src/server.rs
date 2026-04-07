@@ -16,6 +16,7 @@ use axum::{
 use serde::Deserialize;
 use std::{
     collections::HashSet,
+    io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     thread,
@@ -422,7 +423,12 @@ async fn refresh_tailscale_listeners(
     port: u16,
     app: Router,
 ) {
-    let tailscale_ips = network::discover_tailscale_status().tailscale_ips;
+    let tailscale_status = network::discover_tailscale_status();
+    if tailscale_status.serve_enabled {
+        return;
+    }
+
+    let tailscale_ips = tailscale_status.tailscale_ips;
     for ip in tailscale_ips {
         if active_tailnet_ips.contains(&ip) {
             continue;
@@ -435,8 +441,39 @@ async fn refresh_tailscale_listeners(
                 spawn_listener(servers, listener, ListenerKind::Tailscale(ip), app.clone());
             }
             Err(err) => {
+                if tailscale_port_is_in_use(&err) {
+                    tracing::debug!(
+                        error = %err,
+                        ip = %ip,
+                        "Skipping the direct Tailscale listener because this port is already in use"
+                    );
+                    continue;
+                }
+
                 tracing::warn!(error = %err, ip = %ip, "Failed to bind the Tailscale listener");
             }
         }
+    }
+}
+
+fn tailscale_port_is_in_use(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::AddrInUse || err.raw_os_error() == Some(10048)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tailscale_port_is_in_use;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn tailscale_port_conflict_is_treated_as_non_fatal() {
+        let err = Error::from(ErrorKind::AddrInUse);
+        assert!(tailscale_port_is_in_use(&err));
+    }
+
+    #[test]
+    fn unrelated_listener_errors_are_not_suppressed() {
+        let err = Error::from(ErrorKind::PermissionDenied);
+        assert!(!tailscale_port_is_in_use(&err));
     }
 }

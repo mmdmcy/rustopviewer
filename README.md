@@ -8,7 +8,7 @@ ROV currently ships as:
 - A built-in mobile web client served by the host itself
 - A host-approved pairing flow that exchanges one-time codes for short-lived sessions
 - In-app readiness checks for off-LAN access over Tailscale
-- Optional one-click Tailscale HTTPS setup for Safari-friendly remote access
+- One-click Tailscale phone URL setup inside the tailnet, with optional HTTPS later if desired
 
 ## Why ROV
 
@@ -61,7 +61,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Keyboard shortcuts and plain-text input
 - Local button and two-finger view zoom with panning on iPhone
 - View-only by default, with host-side toggles for remote pointer and keyboard control
-- Loopback plus Tailscale-tailnet host listeners, with Tailscale Serve HTTPS as an optional browser convenience
+- Loopback plus Tailscale-tailnet host listeners, with Tailscale Serve HTTP as the preferred phone path and HTTPS remaining optional
 
 ## Current Limitations
 
@@ -98,36 +98,41 @@ cargo run --release
 
 1. Start Tailscale on the laptop and on the iPhone.
 2. Launch ROV on the laptop.
-3. Copy the tailnet "Phone URL" shown in the desktop app.
-4. Open that URL on the iPhone while both devices are connected to the same tailnet.
-5. If you later want a browser-trusted HTTPS URL, click **Enable HTTPS for iPhone**.
-6. Generate a one-time pairing code on the Windows app and enter it on the phone.
-7. Use the remote page to view, and enable input scopes on the Windows app only when you need control.
+3. Click **Enable Phone URL** if the phone URL is not ready yet.
+4. Copy the "Phone URL" shown in the desktop app.
+5. Open that URL on the iPhone while both devices are connected to the same tailnet.
+6. If you later want a browser-trusted HTTPS URL, set that up separately.
+7. Generate a one-time pairing code on the Windows app and enter it on the phone.
+8. Use the remote page to view, and enable input scopes on the Windows app only when you need control.
 
-### Recommended: trusted HTTPS on iPhone
+### Preferred: Tailscale phone URL
 
 ROV keeps its remote-control server off the normal LAN and can publish it to the phone in two ways:
 
+- Through Tailscale Serve HTTP inside the tailnet
 - Directly on the device's Tailscale tailnet address
-- Through optional Tailscale Serve HTTPS if you want a browser-trusted URL
+- Through optional Tailscale Serve HTTPS if you want a browser-trusted URL later
 
 This means the Rust app itself does not open a normal LAN-facing remote-control socket and still avoids public internet exposure by default.
 
-You can now do this from inside the Windows app with the **Enable HTTPS for iPhone** button.
+You can now do this from inside the Windows app with the **Enable Phone URL** button.
 
-1. Enable MagicDNS and HTTPS certificates in the Tailscale admin console.
-2. In the Windows app, click **Enable HTTPS for iPhone**.
+1. In the Windows app, click **Enable Phone URL**.
 
 If you prefer to do it manually on the Windows host, run:
 
 ```powershell
-tailscale serve --bg --yes 45080
+tailscale serve --bg --yes --http 45080 127.0.0.1:45080
 ```
 
-3. Tailscale will print an `https://...ts.net` URL for this machine.
-4. Open that HTTPS URL in Safari on the iPhone.
+2. Tailscale will print an `http://...ts.net:45080` URL for this machine.
+3. Open that URL on the iPhone while both devices are on the same tailnet.
 
-This remains optional. Tailnet-only access already keeps traffic inside the encrypted Tailscale network boundary.
+This is the preferred phone path because it keeps traffic inside the encrypted Tailscale boundary and avoids extra Windows Firewall friction on the app process itself.
+
+### Optional: browser-trusted HTTPS later
+
+If you eventually want a browser-trusted HTTPS URL, Tailscale HTTPS certificates still need to be enabled for the tailnet first.
 
 ## Repository Standards
 
@@ -159,7 +164,7 @@ cargo test --all-targets --all-features
 
 - The host app listens on loopback and the current Tailscale tailnet IPs, not on the normal LAN or public internet.
 - Opening the phone page is not enough to gain control. A new phone session must be paired with a one-time code generated on the Windows app.
-- Approved phone sessions are short-lived, cookie-based, and only one session is kept at a time.
+- Approved phone sessions are cookie-based, single-device, host-revocable, and now stay paired for up to 24 hours without an idle timeout.
 - Remote pointer and keyboard control both default to off; view-only mode is the safe starting state.
 - Running ROV as Administrator forces remote input back to view-only.
 - Tailscale remains the supported network boundary for off-LAN use; no-Tailscale off-LAN exposure is intentionally out of scope.
