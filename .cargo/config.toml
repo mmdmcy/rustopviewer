@@ -1,0 +1,2 @@
+[target.'cfg(windows)']
+runner = ["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/cargo-runner.ps1"]
