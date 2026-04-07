@@ -294,7 +294,7 @@ impl RustOpViewerApp {
         ui.heading("Security");
         ui.label(
             RichText::new(
-                "The phone now pairs with a one-time code. Only one approved device session is kept at a time, and remote control stays off until you enable it here.",
+                "The phone now pairs with a one-time code. Only one approved device session is kept at a time, and a successful pairing automatically restores pointer and keyboard control unless ROV is running elevated.",
             )
             .color(Color32::from_rgb(226, 232, 240)),
         );
@@ -441,7 +441,7 @@ impl RustOpViewerApp {
 
         ui.label(
             RichText::new(
-                "Leave both boxes off for view-only mode. Turn them on only when you actively need control.",
+                "Leave either box off only when you intentionally want view-only or reduced-control mode. A new successful phone pairing will re-enable both unless ROV is running elevated.",
             )
             .small()
             .color(Color32::from_rgb(148, 163, 184)),
@@ -829,7 +829,7 @@ impl App for RustOpViewerApp {
                             ui.label("3. Copy the phone URL above and open it on the phone while both devices are on the same tailnet.");
                             ui.label("4. If you prefer a browser-trusted HTTPS URL later, enable Tailscale Serve HTTPS separately.");
                             ui.label("5. On the Windows app, generate a one-time pairing code and type it on the phone page.");
-                            ui.label("6. Keep remote input off for view-only access, or enable only the control scopes you need.");
+                            ui.label("6. Pairing restores pointer and keyboard automatically unless ROV is elevated. Turn either scope off here only when you intentionally want view-only.");
                             ui.add_space(10.0);
                             ui.label(
                                 RichText::new(format!(

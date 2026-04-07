@@ -1059,10 +1059,13 @@
             showOverlay("Capture issue", payload.capture_error);
           }
         } else {
-          const modeLabel = payload.remote_pointer_enabled || payload.remote_keyboard_enabled
+          const controlReady = payload.remote_pointer_enabled || payload.remote_keyboard_enabled;
+          const modeLabel = controlReady
             ? "Control scopes approved"
-            : "View only";
-          setConnectionState("Connected", modeLabel, payload.remote_pointer_enabled || payload.remote_keyboard_enabled ? "ok" : "warn");
+            : payload.host_elevated
+              ? "View only - Windows app is elevated"
+              : "View only - enable control on the Windows app";
+          setConnectionState("Connected", modeLabel, controlReady ? "ok" : "warn");
           if (!payload.has_frame && !state.frameReady) {
             showOverlay("Waiting for frame", "The laptop is connected but has not delivered the first frame yet.");
           } else if (state.frameReady) {
@@ -1263,7 +1266,8 @@
     }
 
     function onPointerDown(event) {
-      if (!state.pointerEnabled || !state.frameReady) {
+      const allowLocalPan = canPanView();
+      if (!state.frameReady || (!state.pointerEnabled && !allowLocalPan)) {
         return;
       }
 
@@ -1377,6 +1381,12 @@
         return;
       }
 
+      if (!state.pointerEnabled) {
+        releaseTrackedPointer(event.pointerId);
+        state.pointer = null;
+        return;
+      }
+
       if (!state.pointer.moved && heldFor >= LONG_PRESS_MS) {
         sendCommand({ type: "click", x: point.x, y: point.y, button: "right", count: 1 });
       } else if (!state.pointer.moved) {
@@ -1390,7 +1400,22 @@
     }
 
     function onTouchStart(event) {
-      if (!state.pointerEnabled || !state.frameReady || !isScreenPointerTarget(event.target)) {
+      if (!state.frameReady || !isScreenPointerTarget(event.target)) {
+        return;
+      }
+
+      if (event.touches.length >= 2) {
+        if (state.keyboardVisible) {
+          dismissKeyboard(false);
+          syncUiState();
+        }
+
+        event.preventDefault();
+        beginTouchGesture(event.touches);
+        return;
+      }
+
+      if (!state.pointerEnabled) {
         return;
       }
 
@@ -1404,18 +1429,6 @@
         beginTouchScroll(event.touches[0]);
         return;
       }
-
-      if (event.touches.length < 2) {
-        return;
-      }
-
-      if (state.keyboardVisible) {
-        dismissKeyboard(false);
-        syncUiState();
-      }
-
-      event.preventDefault();
-      beginTouchGesture(event.touches);
     }
 
     function onTouchMove(event) {
