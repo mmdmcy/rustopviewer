@@ -22,6 +22,10 @@ pub struct PairCodeSnapshot {
 pub struct SessionSnapshot {
     pub expires_in: Duration,
     pub idle_expires_in: Duration,
+    pub bytes_sent: u64,
+    pub frame_responses: u64,
+    pub cached_frame_hits: u64,
+    pub status_responses: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +162,10 @@ impl SessionStore {
             input_window_started_at: now,
             input_count_in_window: 0,
             user_agent,
+            bytes_sent: 0,
+            frame_responses: 0,
+            cached_frame_hits: 0,
+            status_responses: 0,
         };
         let session_id = session.id.clone();
         self.session = Some(session);
@@ -211,6 +219,54 @@ impl SessionStore {
     pub fn current_user_agent(&self) -> Option<&str> {
         self.session.as_ref()?.user_agent.as_deref()
     }
+
+    pub fn record_status_response(
+        &mut self,
+        session_id: &str,
+        bytes_sent: usize,
+    ) -> Result<(), SessionAuthError> {
+        let session = self.active_session_mut(session_id)?;
+        session.status_responses = session.status_responses.saturating_add(1);
+        session.bytes_sent = session.bytes_sent.saturating_add(bytes_sent as u64);
+        Ok(())
+    }
+
+    pub fn record_frame_response(
+        &mut self,
+        session_id: &str,
+        bytes_sent: usize,
+        reused_cached_frame: bool,
+    ) -> Result<(), SessionAuthError> {
+        let session = self.active_session_mut(session_id)?;
+        if reused_cached_frame {
+            session.cached_frame_hits = session.cached_frame_hits.saturating_add(1);
+        } else {
+            session.frame_responses = session.frame_responses.saturating_add(1);
+            session.bytes_sent = session.bytes_sent.saturating_add(bytes_sent as u64);
+        }
+        Ok(())
+    }
+
+    fn active_session_mut(
+        &mut self,
+        session_id: &str,
+    ) -> Result<&mut RemoteSession, SessionAuthError> {
+        let now = SystemTime::now();
+        let is_expired = self
+            .session
+            .as_ref()
+            .ok_or(SessionAuthError::Missing)?
+            .is_expired(now);
+        if is_expired {
+            self.session = None;
+            return Err(SessionAuthError::Expired);
+        }
+        let session = self.session.as_mut().ok_or(SessionAuthError::Missing)?;
+        if !constant_time_eq(&session.id, session_id) {
+            return Err(SessionAuthError::Invalid);
+        }
+        Ok(session)
+    }
 }
 
 #[derive(Clone)]
@@ -241,6 +297,10 @@ struct RemoteSession {
     input_window_started_at: SystemTime,
     input_count_in_window: u16,
     user_agent: Option<String>,
+    bytes_sent: u64,
+    frame_responses: u64,
+    cached_frame_hits: u64,
+    status_responses: u64,
 }
 
 impl RemoteSession {
@@ -253,6 +313,10 @@ impl RemoteSession {
         SessionSnapshot {
             expires_in: duration_until(self.expires_at, now),
             idle_expires_in: duration_until(idle_expires_at, now),
+            bytes_sent: self.bytes_sent,
+            frame_responses: self.frame_responses,
+            cached_frame_hits: self.cached_frame_hits,
+            status_responses: self.status_responses,
         }
     }
 }
