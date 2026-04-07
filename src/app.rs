@@ -10,6 +10,7 @@ use eframe::{
 
 use crate::{
     capture,
+    config::StreamProfile,
     network::{self, ConnectionUrl, RemoteAccessMode, TailscaleStatusSnapshot, UrlSet},
     state::AppState,
 };
@@ -284,6 +285,17 @@ impl RustOpViewerApp {
                         .color(Color32::from_rgb(148, 163, 184)),
                 );
             }
+            ui.label(
+                RichText::new(format!(
+                    "Approx data sent this session: {} across {} fresh frame(s), {} cached frame check(s), and {} status update(s).",
+                    format_bytes_compact(session.bytes_sent),
+                    session.frame_responses,
+                    session.cached_frame_hits,
+                    session.status_responses
+                ))
+                .small()
+                .color(Color32::from_rgb(148, 163, 184)),
+            );
         } else {
             ui.add_space(8.0);
             ui.label(
@@ -386,6 +398,54 @@ impl RustOpViewerApp {
             .color(Color32::from_rgb(148, 163, 184)),
         );
     }
+
+    fn render_stream_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Stream Profile");
+        let current_profile = self.state.stream_profile();
+        ui.label(
+            RichText::new(
+                "Pick the profile that best fits your phone connection. ROV now avoids resending identical frames, so idle viewing is much cheaper than before.",
+            )
+            .color(Color32::from_rgb(226, 232, 240)),
+        );
+
+        ui.add_space(8.0);
+        for profile in [
+            StreamProfile::Balanced,
+            StreamProfile::DataSaver,
+            StreamProfile::Emergency,
+        ] {
+            let selected = current_profile == profile;
+            let response = ui.radio(selected, profile.label());
+            if response.clicked() && !selected {
+                match self.state.set_stream_profile(profile) {
+                    Ok(()) => {
+                        self.show_toast(format!("Stream profile switched to {}", profile.label()))
+                    }
+                    Err(err) => self.show_toast(format!("Stream profile update failed: {err}")),
+                }
+            }
+
+            let settings = profile.settings();
+            ui.label(
+                RichText::new(format!(
+                    "{} Width {}px, JPEG {}, active ~{} ms, idle ~{} ms.",
+                    profile.summary(),
+                    settings.max_frame_width,
+                    settings.jpeg_quality,
+                    settings.active_frame_interval.as_millis(),
+                    settings.idle_frame_interval.as_millis()
+                ))
+                .small()
+                .color(if selected {
+                    Color32::from_rgb(191, 219, 254)
+                } else {
+                    Color32::from_rgb(148, 163, 184)
+                }),
+            );
+            ui.add_space(4.0);
+        }
+    }
 }
 
 impl App for RustOpViewerApp {
@@ -407,7 +467,7 @@ impl App for RustOpViewerApp {
                 );
                 ui.label(
                     RichText::new(
-                        "Remote desktop viewing for Windows 11 with pair-approved phone sessions and Tailscale Serve as the off-LAN boundary.",
+                        "Remote desktop viewing for Windows hosts with pair-approved phone sessions and Tailscale Serve as the off-LAN boundary.",
                     )
                     .size(15.0)
                     .color(Color32::from_rgb(148, 163, 184)),
@@ -445,11 +505,12 @@ impl App for RustOpViewerApp {
                             .map(|elapsed| elapsed.as_millis())
                             .unwrap_or(0);
                         ui.label(format!(
-                            "Latest frame: {}x{} (source {}x{}, {} ms ago)",
+                            "Latest frame: {}x{} (source {}x{}, {}, {} ms ago)",
                             frame.encoded_width,
                             frame.encoded_height,
                             frame.source_width,
                             frame.source_height,
+                            format_bytes_compact(frame.byte_len as u64),
                             age_ms
                         ));
                     } else {
@@ -532,6 +593,11 @@ impl App for RustOpViewerApp {
                         )
                         .color(Color32::from_rgb(148, 163, 184)),
                     );
+                });
+
+                left.add_space(12.0);
+                left.group(|ui| {
+                    self.render_stream_panel(ui);
                 });
 
                 left.add_space(12.0);
@@ -670,6 +736,23 @@ fn format_duration_compact(duration: Duration) -> String {
         format!("{minutes}m {seconds}s")
     } else {
         format!("{seconds}s")
+    }
+}
+
+fn format_bytes_compact(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    let bytes_f64 = bytes as f64;
+    if bytes_f64 >= GIB {
+        format!("{:.2} GiB", bytes_f64 / GIB)
+    } else if bytes_f64 >= MIB {
+        format!("{:.2} MiB", bytes_f64 / MIB)
+    } else if bytes_f64 >= KIB {
+        format!("{:.1} KiB", bytes_f64 / KIB)
+    } else {
+        format!("{bytes} B")
     }
 }
 

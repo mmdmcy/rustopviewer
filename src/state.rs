@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    config::{AppConfig, ConfigStore},
+    config::{AppConfig, ConfigStore, StreamProfile, StreamSettings},
     input::InputCommand,
     model::{LatestFrame, MonitorInfo, StatusResponse},
     security::{PairCodeSnapshot, SessionAuthError, SessionGrant, SessionSnapshot, SessionStore},
@@ -69,12 +69,20 @@ impl AppState {
         self.config.read().selected_monitor_id
     }
 
-    pub fn capture_settings(&self) -> (u8, u32) {
+    pub fn stream_profile(&self) -> StreamProfile {
+        self.config.read().stream_profile
+    }
+
+    pub fn stream_settings(&self) -> StreamSettings {
+        self.stream_profile().settings()
+    }
+
+    pub fn capture_settings(&self) -> StreamSettings {
         let config = self.config.read();
-        (
-            config.jpeg_quality.max(76),
-            config.max_frame_width.max(1800),
-        )
+        let mut settings = config.stream_profile.settings();
+        settings.jpeg_quality = config.jpeg_quality.clamp(35, 90);
+        settings.max_frame_width = config.max_frame_width.clamp(720, 1920);
+        settings
     }
 
     pub fn remote_pointer_enabled(&self) -> bool {
@@ -96,6 +104,13 @@ impl AppState {
     pub fn set_selected_monitor(&self, monitor_id: u32) -> Result<()> {
         let mut config = self.config.write();
         config.selected_monitor_id = Some(monitor_id);
+        self.config_store.save(&config)?;
+        Ok(())
+    }
+
+    pub fn set_stream_profile(&self, profile: StreamProfile) -> Result<()> {
+        let mut config = self.config.write();
+        config.apply_stream_profile(profile);
         self.config_store.save(&config)?;
         Ok(())
     }
@@ -182,6 +197,31 @@ impl AppState {
         self.sessions.write().authorize_input_session(session_id)
     }
 
+    pub fn record_status_response(&self, session_id: &str, bytes_sent: usize) {
+        if let Err(err) = self
+            .sessions
+            .write()
+            .record_status_response(session_id, bytes_sent)
+        {
+            tracing::debug!(error = ?err, "Failed to record session status transfer");
+        }
+    }
+
+    pub fn record_frame_response(
+        &self,
+        session_id: &str,
+        bytes_sent: usize,
+        reused_cached_frame: bool,
+    ) {
+        if let Err(err) =
+            self.sessions
+                .write()
+                .record_frame_response(session_id, bytes_sent, reused_cached_frame)
+        {
+            tracing::debug!(error = ?err, "Failed to record session frame transfer");
+        }
+    }
+
     pub fn monitors(&self) -> Vec<MonitorInfo> {
         self.monitors.read().clone()
     }
@@ -260,10 +300,16 @@ impl AppState {
     pub fn status_response(&self) -> StatusResponse {
         let frame = self.latest_frame();
         let session = self.current_remote_session();
+        let stream_settings = self.stream_settings();
 
         StatusResponse {
             selected_monitor: self.selected_monitor(),
             monitors: self.monitors(),
+            stream_profile: self.stream_profile(),
+            active_frame_interval_ms: stream_settings.active_frame_interval.as_millis() as u64,
+            idle_frame_interval_ms: stream_settings.idle_frame_interval.as_millis() as u64,
+            interaction_boost_window_ms: stream_settings.interaction_boost_window.as_millis()
+                as u64,
             has_frame: frame.is_some(),
             frame_width: frame.as_ref().map(|frame| frame.encoded_width),
             frame_height: frame.as_ref().map(|frame| frame.encoded_height),
@@ -283,6 +329,10 @@ impl AppState {
             session_idle_expires_in_ms: session
                 .as_ref()
                 .map(|session| session.idle_expires_in.as_millis()),
+            session_bytes_sent: session.as_ref().map(|session| session.bytes_sent),
+            session_frame_responses: session.as_ref().map(|session| session.frame_responses),
+            session_cached_frame_hits: session.as_ref().map(|session| session.cached_frame_hits),
+            session_status_responses: session.as_ref().map(|session| session.status_responses),
         }
     }
 

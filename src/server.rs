@@ -6,8 +6,8 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
-            CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, InvalidHeaderValue,
-            PRAGMA, REFERRER_POLICY, SET_COOKIE, USER_AGENT,
+            CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH,
+            InvalidHeaderValue, PRAGMA, REFERRER_POLICY, SET_COOKIE, USER_AGENT,
         },
     },
     response::{IntoResponse, Response},
@@ -118,14 +118,26 @@ async fn pair(
 }
 
 async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
-    authorize_session(&headers, &state)?;
-    let mut response = Json(state.status_response()).into_response();
+    let session_id = authorize_session(&headers, &state)?;
+    let payload = serde_json::to_vec(&state.status_response()).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialize the session status".to_string(),
+        )
+    })?;
+    state.record_status_response(&session_id, payload.len());
+
+    let mut response = Response::new(Body::from(payload));
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
     apply_security_headers(response.headers_mut(), false);
     Ok(response)
 }
 
 async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
-    authorize_session(&headers, &state)?;
+    let session_id = authorize_session(&headers, &state)?;
 
     let frame = state.latest_frame().ok_or_else(|| {
         (
@@ -134,10 +146,32 @@ async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiRes
         )
     })?;
 
+    if request_etag_matches(&headers, &frame.etag) {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        let etag = HeaderValue::from_str(&frame.etag).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to attach the frame cache tag".to_string(),
+            )
+        })?;
+        response.headers_mut().insert(ETAG, etag);
+        apply_security_headers(response.headers_mut(), false);
+        state.record_frame_response(&session_id, 0, true);
+        return Ok(response);
+    }
+
     let mut response = Response::new(Body::from(frame.jpeg.as_ref().clone()));
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    let etag = HeaderValue::from_str(&frame.etag).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to attach the frame cache tag".to_string(),
+        )
+    })?;
+    headers.insert(ETAG, etag);
     apply_security_headers(headers, false);
+    state.record_frame_response(&session_id, frame.byte_len, false);
 
     Ok(response)
 }
@@ -166,11 +200,11 @@ async fn input(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn authorize_session(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
+fn authorize_session(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
     let session_id = session_cookie(headers)?;
     state
         .authorize_session(&session_id)
-        .map(|_| ())
+        .map(|_| session_id)
         .map_err(session_error_response)
 }
 
@@ -283,4 +317,16 @@ fn apply_security_headers(headers: &mut HeaderMap, is_html: bool) {
             ),
         );
     }
+}
+
+fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|candidate| candidate == "*" || candidate == etag)
+        })
 }

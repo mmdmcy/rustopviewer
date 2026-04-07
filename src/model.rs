@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::{sync::Arc, time::SystemTime};
 
+use crate::config::StreamProfile;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MonitorInfo {
     pub id: u32,
@@ -29,6 +31,8 @@ impl MonitorInfo {
 #[derive(Debug, Clone)]
 pub struct LatestFrame {
     pub jpeg: Arc<Vec<u8>>,
+    pub etag: String,
+    pub byte_len: usize,
     pub source_width: u32,
     pub source_height: u32,
     pub encoded_width: u32,
@@ -40,6 +44,10 @@ pub struct LatestFrame {
 pub struct StatusResponse {
     pub selected_monitor: Option<MonitorInfo>,
     pub monitors: Vec<MonitorInfo>,
+    pub stream_profile: StreamProfile,
+    pub active_frame_interval_ms: u64,
+    pub idle_frame_interval_ms: u64,
+    pub interaction_boost_window_ms: u64,
     pub has_frame: bool,
     pub frame_width: Option<u32>,
     pub frame_height: Option<u32>,
@@ -52,4 +60,8 @@ pub struct StatusResponse {
     pub host_elevated: bool,
     pub session_expires_in_ms: Option<u128>,
     pub session_idle_expires_in_ms: Option<u128>,
+    pub session_bytes_sent: Option<u64>,
+    pub session_frame_responses: Option<u64>,
+    pub session_cached_frame_hits: Option<u64>,
+    pub session_status_responses: Option<u64>,
 }

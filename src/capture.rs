@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use image::{DynamicImage, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use std::{
+    hash::Hasher,
     sync::Arc,
     thread,
     time::{Duration, Instant, SystemTime},
@@ -68,8 +69,8 @@ fn capture_loop(state: Arc<AppState>) {
             continue;
         };
 
-        let (jpeg_quality, max_frame_width) = state.capture_settings();
-        match capture_monitor_frame(monitor, jpeg_quality, max_frame_width) {
+        let settings = state.capture_settings();
+        match capture_monitor_frame(monitor, settings.jpeg_quality, settings.max_frame_width) {
             Ok(frame) => state.update_frame(frame),
             Err(err) => {
                 state.set_capture_error(err.to_string());
@@ -78,7 +79,7 @@ fn capture_loop(state: Arc<AppState>) {
             }
         }
 
-        thread::sleep(Duration::from_millis(180));
+        thread::sleep(settings.capture_interval);
     }
 }
 
@@ -173,13 +174,23 @@ fn capture_monitor_frame(
     encoder
         .encode_image(&prepared)
         .context("failed to encode the captured frame as JPEG")?;
+    let byte_len = jpeg.len();
+    let etag = frame_etag(&jpeg);
 
     Ok(LatestFrame {
         jpeg: Arc::new(jpeg),
+        etag,
+        byte_len,
         source_width,
         source_height,
         encoded_width,
         encoded_height,
         captured_at: SystemTime::now(),
     })
+}
+
+fn frame_etag(jpeg: &[u8]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(jpeg);
+    format!("\"{:016x}-{}\"", hasher.finish(), jpeg.len())
 }

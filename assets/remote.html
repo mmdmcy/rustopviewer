@@ -601,7 +601,9 @@
   </main>
 
   <script>
-    const FRAME_INTERVAL_MS = 220;
+    const DEFAULT_ACTIVE_FRAME_INTERVAL_MS = 250;
+    const DEFAULT_IDLE_FRAME_INTERVAL_MS = 500;
+    const DEFAULT_INTERACTION_BOOST_MS = 2000;
     const STATUS_INTERVAL_MS = 1800;
     const MOVE_INTERVAL_MS = 40;
     const LONG_PRESS_MS = 520;
@@ -626,9 +628,16 @@
       textComposing: false,
       keyboardVisible: false,
       lastTextInputAt: 0,
+      lastInteractionAt: 0,
       pointerEnabled: false,
       keyboardEnabled: false,
-      pairingBusy: false
+      pairingBusy: false,
+      frameTimerId: 0,
+      frameRequestInFlight: false,
+      lastFrameEtag: "",
+      activeFrameIntervalMs: DEFAULT_ACTIVE_FRAME_INTERVAL_MS,
+      idleFrameIntervalMs: DEFAULT_IDLE_FRAME_INTERVAL_MS,
+      interactionBoostWindowMs: DEFAULT_INTERACTION_BOOST_MS
     };
 
     const body = document.body;
@@ -680,7 +689,7 @@
       bindControls();
       syncUiState();
       refreshStatus();
-      refreshFrame();
+      scheduleNextFrame(0);
       window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
     }
 
@@ -1023,6 +1032,9 @@
         const payload = await response.json();
         state.pointerEnabled = !!payload.remote_pointer_enabled;
         state.keyboardEnabled = !!payload.remote_keyboard_enabled;
+        state.activeFrameIntervalMs = Math.max(120, Number(payload.active_frame_interval_ms) || DEFAULT_ACTIVE_FRAME_INTERVAL_MS);
+        state.idleFrameIntervalMs = Math.max(state.activeFrameIntervalMs, Number(payload.idle_frame_interval_ms) || DEFAULT_IDLE_FRAME_INTERVAL_MS);
+        state.interactionBoostWindowMs = Math.max(600, Number(payload.interaction_boost_window_ms) || DEFAULT_INTERACTION_BOOST_MS);
         syncUiState();
         if (payload.selected_monitor) {
           const monitor = payload.selected_monitor;
@@ -1066,10 +1078,21 @@
     }
 
     async function refreshFrame() {
+      if (state.frameRequestInFlight) {
+        return;
+      }
+
+      state.frameRequestInFlight = true;
       try {
-        const response = await fetch(`/api/frame.jpg?ts=${Date.now()}`, {
+        const headers = {};
+        if (state.lastFrameEtag) {
+          headers["If-None-Match"] = state.lastFrameEtag;
+        }
+
+        const response = await fetch("/api/frame.jpg", {
           cache: "no-store",
-          credentials: "same-origin"
+          credentials: "same-origin",
+          headers
         });
 
         if (response.status === 401) {
@@ -1087,8 +1110,21 @@
           return;
         }
 
+        if (response.status === 304) {
+          const etag = response.headers.get("etag");
+          if (etag) {
+            state.lastFrameEtag = etag;
+          }
+          return;
+        }
+
         if (!response.ok) {
           throw new Error(`frame ${response.status}`);
+        }
+
+        const etag = response.headers.get("etag");
+        if (etag) {
+          state.lastFrameEtag = etag;
         }
 
         const blob = await response.blob();
@@ -1103,7 +1139,8 @@
           showOverlay("Stream paused", `Frame request failed: ${error.message}`);
         }
       } finally {
-        window.setTimeout(refreshFrame, FRAME_INTERVAL_MS);
+        state.frameRequestInFlight = false;
+        scheduleNextFrame(nextFrameDelayMs());
       }
     }
 
@@ -1163,6 +1200,7 @@
         return false;
       }
 
+      markRecentInteraction();
       try {
         const response = await fetch("/api/input", {
           method: "POST",
@@ -1199,6 +1237,29 @@
       return new Promise((resolve) => {
         window.setTimeout(resolve, ms);
       });
+    }
+
+    function markRecentInteraction() {
+      state.lastInteractionAt = Date.now();
+      scheduleNextFrame(0);
+    }
+
+    function nextFrameDelayMs() {
+      if (Date.now() - state.lastInteractionAt <= state.interactionBoostWindowMs) {
+        return state.activeFrameIntervalMs;
+      }
+      return state.idleFrameIntervalMs;
+    }
+
+    function scheduleNextFrame(delayMs) {
+      if (state.frameTimerId) {
+        window.clearTimeout(state.frameTimerId);
+      }
+
+      state.frameTimerId = window.setTimeout(() => {
+        state.frameTimerId = 0;
+        refreshFrame();
+      }, Math.max(0, delayMs));
     }
 
     function onPointerDown(event) {
@@ -1788,7 +1849,8 @@
           pairCodeInput.value = "";
           pairHint.textContent = "Phone paired. Loading the live desktop...";
           await refreshStatus();
-          await refreshFrame();
+          markRecentInteraction();
+          scheduleNextFrame(0);
           return;
         }
 

@@ -1,6 +1,6 @@
 # rustopviewer
 
-RustOp Viewer, or **ROV**, is a Windows-first remote desktop viewer/controller written in Rust and optimized for controlling a Windows 11 laptop from an iPhone over Tailscale, including when the phone is on mobile data or another Wi-Fi network.
+RustOp Viewer, or **ROV**, is a Windows-first remote desktop viewer/controller written in Rust and optimized for controlling a Windows laptop from an iPhone over Tailscale, including when the phone is on mobile data or another Wi-Fi network.
 
 ROV currently ships as:
 
@@ -20,12 +20,43 @@ ROV exists to make a very specific workflow feel good:
 - Click, drag, scroll, type, and launch shortcuts quickly
 - Keep the stack small, understandable, and hackable in Rust
 
+## Product Direction
+
+This repository is intentionally aimed at a focused remote-control workflow rather than a full Remote Desktop replacement.
+
+### Core goals
+
+- Reliable remote access from a phone to a Windows machine while on the go
+- Off-LAN access only through Tailscale
+- No direct public internet exposure and no non-Tailscale off-LAN mode
+- Support for Windows Home as well as higher Windows editions
+- Security-first defaults, with host-approved pairing and tight session handling
+- A mobile-first experience that remains usable on limited or flaky phone connectivity
+- Fast access to the live desktop with the inputs that matter most: pointer, scroll, text, and shortcuts
+
+### Explicit non-goals for now
+
+- Replacing Windows Remote Desktop feature-for-feature
+- Audio streaming
+- Clipboard sync
+- File transfer
+- Enterprise desktop-management features
+- Chasing extra complexity when the current phone workflow already feels good enough
+
+### Operational boundaries
+
+- The Windows session is expected to be awake and unlocked
+- Tailscale is the network boundary for off-LAN use
+- The phone client is a focused control surface, not a general-purpose desktop protocol
+- Security and safe remote use take priority over convenience when the two conflict
+
 ## Current Features
 
 - Native Windows desktop control window
 - Monitor selection
 - Mobile Safari-oriented remote UI
 - Screen streaming from the selected monitor
+- Balanced, Data Saver, and Emergency stream profiles for mobile-friendly bandwidth use
 - Mouse move, click, drag, and wheel input
 - Keyboard shortcuts and plain-text input
 - Local button and two-finger view zoom with panning on iPhone
@@ -52,7 +83,7 @@ Notable current limitations:
 
 ### Requirements
 
-- Windows 11 host
+- Windows host
 - Rust toolchain
 - iPhone with Safari
 - Tailscale on both devices if you want reliable off-LAN access
