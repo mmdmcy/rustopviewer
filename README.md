@@ -28,7 +28,7 @@ ROV exists to make a very specific workflow feel good:
 - Screen streaming from the selected monitor
 - Mouse move, click, drag, and wheel input
 - Keyboard shortcuts and plain-text input
-- Local view zoom and UI-hide modes on iPhone
+- Local button and two-finger view zoom with panning on iPhone
 - Token-based API authentication
 - Tailscale-first access model for mobile data and off-LAN control
 
@@ -62,8 +62,6 @@ Notable current limitations:
 ```powershell
 cargo run --release
 ```
-
-If you are iterating on the repo, the desktop app now includes a **Restart From Source** button and the mobile web client includes **Restart Host App**. Both shut down the current host process and start a fresh `cargo run` from this repository so you do not need to kill and relaunch it manually after changes.
 
 ### Use it from iPhone
 
@@ -131,7 +129,7 @@ cargo test --all-targets --all-features
 ## Roadmap Highlights
 
 - Better precision and calibration for scaled displays
-- Pinch-to-zoom and richer mobile navigation
+- Better gesture calibration for Safari and scaled displays
 - Lower-latency streaming transport
 - Clipboard sync
 - File transfer
