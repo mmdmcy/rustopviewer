@@ -8,7 +8,7 @@ ROV currently ships as:
 - A built-in mobile web client served by the host itself
 - A host-approved pairing flow that exchanges one-time codes for short-lived sessions
 - In-app readiness checks for off-LAN access over Tailscale
-- One-click Tailscale HTTPS setup for Safari-friendly remote access
+- Optional one-click Tailscale HTTPS setup for Safari-friendly remote access
 
 ## Why ROV
 
@@ -61,7 +61,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Keyboard shortcuts and plain-text input
 - Local button and two-finger view zoom with panning on iPhone
 - View-only by default, with host-side toggles for remote pointer and keyboard control
-- Loopback-only host server with Tailscale Serve as the intended off-LAN path
+- Loopback plus Tailscale-tailnet host listeners, with Tailscale Serve HTTPS as an optional browser convenience
 
 ## Current Limitations
 
@@ -98,15 +98,20 @@ cargo run --release
 
 1. Start Tailscale on the laptop and on the iPhone.
 2. Launch ROV on the laptop.
-3. Click **Enable HTTPS for iPhone** if the phone URL is not ready yet.
-4. Copy the "Phone URL" shown in the desktop app.
-5. Open that URL in Safari on the iPhone.
+3. Copy the tailnet "Phone URL" shown in the desktop app.
+4. Open that URL on the iPhone while both devices are connected to the same tailnet.
+5. If you later want a browser-trusted HTTPS URL, click **Enable HTTPS for iPhone**.
 6. Generate a one-time pairing code on the Windows app and enter it on the phone.
 7. Use the remote page to view, and enable input scopes on the Windows app only when you need control.
 
 ### Recommended: trusted HTTPS on iPhone
 
-ROV now keeps its own HTTP server on `127.0.0.1` and expects Tailscale Serve to sit in front of it for off-LAN access. This means the Rust app itself no longer exposes a LAN-facing remote-control socket by default.
+ROV keeps its remote-control server off the normal LAN and can publish it to the phone in two ways:
+
+- Directly on the device's Tailscale tailnet address
+- Through optional Tailscale Serve HTTPS if you want a browser-trusted URL
+
+This means the Rust app itself does not open a normal LAN-facing remote-control socket and still avoids public internet exposure by default.
 
 You can now do this from inside the Windows app with the **Enable HTTPS for iPhone** button.
 
@@ -122,7 +127,7 @@ tailscale serve --bg --yes 45080
 3. Tailscale will print an `https://...ts.net` URL for this machine.
 4. Open that HTTPS URL in Safari on the iPhone.
 
-This keeps the Rust app simple while still giving you a browser-trusted certificate and encrypted HTTPS at the browser edge.
+This remains optional. Tailnet-only access already keeps traffic inside the encrypted Tailscale network boundary.
 
 ## Repository Standards
 
@@ -152,7 +157,7 @@ cargo test --all-targets --all-features
 
 ## Security Model
 
-- The host app listens on loopback only and is intended to be reached off-LAN through Tailscale Serve.
+- The host app listens on loopback and the current Tailscale tailnet IPs, not on the normal LAN or public internet.
 - Opening the phone page is not enough to gain control. A new phone session must be paired with a one-time code generated on the Windows app.
 - Approved phone sessions are short-lived, cookie-based, and only one session is kept at a time.
 - Remote pointer and keyboard control both default to off; view-only mode is the safe starting state.

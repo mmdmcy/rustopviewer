@@ -71,6 +71,7 @@ impl RustOpViewerApp {
     fn render_remote_access_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let status = self.urls.tailscale_status.clone();
         let mobile_url = self.urls.mobile_data_preferred.clone();
+        let tailnet_url = self.urls.tailscale_http.clone();
         let https_url = self.urls.tailscale_https.clone();
         let serve_command = format!("tailscale serve --bg --yes {}", self.state.port());
         let (headline, detail, accent) = remote_access_copy(&status);
@@ -78,7 +79,7 @@ impl RustOpViewerApp {
         ui.heading("Off-LAN Access");
         ui.label(
             RichText::new(
-                "ROV now keeps its own server on 127.0.0.1 and expects Tailscale Serve to proxy the phone session in.",
+                "ROV keeps remote access inside Tailscale. It can listen on the tailnet address directly, and Tailscale Serve HTTPS remains optional if you want a browser-trusted URL.",
             )
             .color(Color32::from_rgb(148, 163, 184)),
         );
@@ -96,10 +97,27 @@ impl RustOpViewerApp {
             render_url_row(ui, ctx, &mut self.toast_message, url);
         }
 
+        if let Some(url) = tailnet_url.as_ref().filter(|candidate| {
+            mobile_url
+                .as_ref()
+                .is_none_or(|selected| selected.url != candidate.url)
+        }) {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Tailnet HTTP")
+                    .color(Color32::from_rgb(148, 163, 184))
+                    .strong(),
+            );
+            render_url_row(ui, ctx, &mut self.toast_message, url);
+        }
+
         if let Some(url) = https_url.as_ref().filter(|candidate| {
             mobile_url
                 .as_ref()
                 .is_none_or(|selected| selected.url != candidate.url)
+                && tailnet_url
+                    .as_ref()
+                    .is_none_or(|tailnet| tailnet.url != candidate.url)
         }) {
             ui.add_space(8.0);
             ui.label(
@@ -130,7 +148,7 @@ impl RustOpViewerApp {
         if !status.tailscale_ips.is_empty() {
             ui.label(
                 RichText::new(format!(
-                    "Tailscale reported {} tailnet address(es), but ROV intentionally keeps direct tailnet HTTP disabled.",
+                    "Tailscale reported {} tailnet address(es). ROV now keeps off-LAN access limited to those tailnet addresses rather than the normal LAN.",
                     status.tailscale_ips.len()
                 ))
                 .small()
@@ -145,7 +163,7 @@ impl RustOpViewerApp {
                     self.copy_text(ctx, "Phone URL", url.url.clone());
                 } else {
                     self.show_toast(
-                        "No off-LAN phone URL is available yet. Turn on Tailscale Serve first.",
+                        "No tailnet phone URL is available yet. Start Tailscale on this Windows machine first.",
                     );
                 }
             }
@@ -183,11 +201,11 @@ impl RustOpViewerApp {
                     .color(Color32::from_rgb(100, 116, 139)),
                 );
             }
-            RemoteAccessMode::NeedsServe => {
+            RemoteAccessMode::ReadyTailnet => {
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new(
-                        "Tailscale is ready, but Serve has not published the HTTPS phone URL yet.",
+                        "Tailscale is ready. Use the tailnet phone URL directly, or enable Serve later if you decide you want HTTPS as an extra browser layer.",
                     )
                     .small()
                     .color(Color32::from_rgb(100, 116, 139)),
@@ -217,7 +235,7 @@ impl RustOpViewerApp {
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new(
-                        "The server is still local-only. Until Tailscale Serve is ready, there is no phone URL to trust off-LAN.",
+                        "The server is still local-only. Once Tailscale reports a tailnet address, ROV can add a tailnet-only phone URL without exposing the normal LAN.",
                     )
                     .small()
                     .color(Color32::from_rgb(100, 116, 139)),
@@ -229,12 +247,13 @@ impl RustOpViewerApp {
             ui.add_space(8.0);
             ui.label(
                 RichText::new(
-                    "Tailscale HTTPS certificates are not enabled for this tailnet yet. Turn on HTTPS certificates in the Tailscale admin DNS settings, then refresh here.",
+                    "Tailnet access already works without browser HTTPS. If you ever want an HTTPS URL, Tailscale certificates must be enabled for the tailnet first.",
                 )
                 .small()
                 .color(Color32::from_rgb(245, 158, 11)),
             );
-        } else if status.is_running && !status.serve_enabled {
+        } else if status.is_running && !status.serve_enabled && status.https_certificates_available
+        {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -467,7 +486,7 @@ impl App for RustOpViewerApp {
                 );
                 ui.label(
                     RichText::new(
-                        "Remote desktop viewing for Windows hosts with pair-approved phone sessions and Tailscale Serve as the off-LAN boundary.",
+                        "Remote desktop viewing for Windows hosts with pair-approved phone sessions and Tailscale as the off-LAN boundary.",
                     )
                     .size(15.0)
                     .color(Color32::from_rgb(148, 163, 184)),
@@ -494,7 +513,7 @@ impl App for RustOpViewerApp {
                 left.group(|ui| {
                     ui.heading("Desktop Status");
                     ui.label(format!(
-                        "Listening on local loopback only: 127.0.0.1:{}",
+                        "Listening on local loopback: 127.0.0.1:{}",
                         self.state.port()
                     ));
 
@@ -504,8 +523,8 @@ impl App for RustOpViewerApp {
                             .elapsed()
                             .map(|elapsed| elapsed.as_millis())
                             .unwrap_or(0);
-                        ui.label(format!(
-                            "Latest frame: {}x{} (source {}x{}, {}, {} ms ago)",
+                    ui.label(format!(
+                        "Latest frame: {}x{} (source {}x{}, {}, {} ms ago)",
                             frame.encoded_width,
                             frame.encoded_height,
                             frame.source_width,
@@ -526,7 +545,7 @@ impl App for RustOpViewerApp {
                     ui.add_space(10.0);
                     ui.label(
                         RichText::new(
-                            "The Windows app itself no longer opens a LAN-facing control socket. Off-LAN use is meant to arrive through Tailscale Serve only.",
+                            "The Windows app keeps off-LAN access inside Tailscale and does not expose a normal LAN-facing remote-control socket.",
                         )
                         .color(Color32::from_rgb(226, 232, 240)),
                     );
@@ -654,8 +673,8 @@ impl App for RustOpViewerApp {
                 right.group(|ui| {
                     ui.heading("How to Use It");
                     ui.label("1. Start Tailscale on the Windows laptop and on the phone.");
-                    ui.label("2. Click Enable HTTPS for iPhone once so Tailscale Serve publishes the phone URL.");
-                    ui.label("3. Copy the phone URL above and open it in Safari.");
+                    ui.label("2. Copy the tailnet phone URL above and open it on the phone while both devices are on the same tailnet.");
+                    ui.label("3. If you prefer a browser-trusted HTTPS URL later, enable Tailscale Serve for iPhone.");
                     ui.label("4. On the Windows app, generate a one-time pairing code and type it on the phone page.");
                     ui.label("5. Keep remote input off for view-only access, or enable only the control scopes you need.");
                     ui.add_space(10.0);
@@ -701,14 +720,14 @@ fn remote_access_copy(status: &TailscaleStatusSnapshot) -> (&'static str, &'stat
             "Trusted HTTPS is already available through Tailscale Serve. The phone still needs a fresh one-time pairing code from this Windows app.",
             Color32::from_rgb(74, 222, 128),
         ),
-        RemoteAccessMode::NeedsServe => (
-            "Tailscale is ready",
-            "MagicDNS is up, but Tailscale Serve has not published the trusted phone URL yet.",
+        RemoteAccessMode::ReadyTailnet => (
+            "Tailnet phone access is ready",
+            "The phone can connect directly over the Tailscale tailnet address. Serve HTTPS is optional.",
             Color32::from_rgb(245, 158, 11),
         ),
         RemoteAccessMode::NeedsTailscaleLogin => (
             "Tailscale needs attention",
-            "Off-LAN access is blocked until this Windows laptop is signed into Tailscale and connected.",
+            "Off-LAN access stays blocked until this Windows laptop is signed into Tailscale and has an active tailnet address.",
             Color32::from_rgb(245, 158, 11),
         ),
         RemoteAccessMode::NeedsTailscaleInstall => (
@@ -718,7 +737,7 @@ fn remote_access_copy(status: &TailscaleStatusSnapshot) -> (&'static str, &'stat
         ),
         RemoteAccessMode::LocalOnly => (
             "Still local-only",
-            "ROV itself is listening only on loopback. Enable Tailscale Serve when you want to publish the trusted phone URL.",
+            "ROV is listening on loopback and waiting for a live Tailscale tailnet address before it can add the off-LAN phone listener.",
             Color32::from_rgb(245, 158, 11),
         ),
     }
