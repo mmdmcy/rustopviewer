@@ -96,8 +96,8 @@ impl Default for AppConfig {
             stream_profile: StreamProfile::default(),
             jpeg_quality: defaults.jpeg_quality,
             max_frame_width: defaults.max_frame_width,
-            remote_pointer_enabled: false,
-            remote_keyboard_enabled: false,
+            remote_pointer_enabled: true,
+            remote_keyboard_enabled: true,
         }
     }
 }

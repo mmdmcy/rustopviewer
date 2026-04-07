@@ -60,7 +60,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Mouse move, click, drag, and wheel input
 - Keyboard shortcuts and plain-text input
 - Local button and two-finger view zoom with panning on iPhone
-- View-only by default, with host-side toggles for remote pointer and keyboard control
+- Pair-approved control that automatically restores pointer and keyboard unless the host is elevated, with host-side toggles for view-only when desired
 - Loopback plus Tailscale-tailnet host listeners, with Tailscale Serve HTTP as the preferred phone path and HTTPS remaining optional
 
 ## Current Limitations
@@ -103,7 +103,7 @@ cargo run --release
 5. Open that URL on the iPhone while both devices are connected to the same tailnet.
 6. If you later want a browser-trusted HTTPS URL, set that up separately.
 7. Generate a one-time pairing code on the Windows app and enter it on the phone.
-8. Use the remote page to view, and enable input scopes on the Windows app only when you need control.
+8. Use the remote page to control the desktop. If you want view-only later, turn either input scope off in the Windows app.
 
 ### Preferred: Tailscale phone URL
 
@@ -165,7 +165,7 @@ cargo test --all-targets --all-features
 - The host app listens on loopback and the current Tailscale tailnet IPs, not on the normal LAN or public internet.
 - Opening the phone page is not enough to gain control. A new phone session must be paired with a one-time code generated on the Windows app.
 - Approved phone sessions are cookie-based, single-device, host-revocable, and now stay paired for up to 24 hours without an idle timeout.
-- Remote pointer and keyboard control both default to off; view-only mode is the safe starting state.
+- A successful phone pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
 - Running ROV as Administrator forces remote input back to view-only.
 - Tailscale remains the supported network boundary for off-LAN use; no-Tailscale off-LAN exposure is intentionally out of scope.
 

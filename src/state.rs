@@ -141,6 +141,22 @@ impl AppState {
         Ok(())
     }
 
+    pub fn enable_remote_control_for_paired_phone(&self) -> Result<()> {
+        if self.is_elevated {
+            return Ok(());
+        }
+
+        let mut config = self.config.write();
+        if config.remote_pointer_enabled && config.remote_keyboard_enabled {
+            return Ok(());
+        }
+
+        config.remote_pointer_enabled = true;
+        config.remote_keyboard_enabled = true;
+        self.config_store.save(&config)?;
+        Ok(())
+    }
+
     pub fn panic_stop(&self) -> Result<()> {
         {
             let mut config = self.config.write();

@@ -155,6 +155,14 @@ async fn pair(
     let grant = state
         .issue_pairing_session(&request.code, user_agent)
         .map_err(pairing_error_response)?;
+    state
+        .enable_remote_control_for_paired_phone()
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to arm remote control after pairing".to_string(),
+            )
+        })?;
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     let secure_cookie = request_is_https(&headers);
