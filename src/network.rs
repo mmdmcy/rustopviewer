@@ -28,6 +28,7 @@ pub struct TailscaleStatusSnapshot {
     pub is_running: bool,
     pub needs_login: bool,
     pub magic_dns_enabled: bool,
+    pub https_certificates_available: bool,
     pub serve_enabled: bool,
     pub host_name: Option<String>,
     pub dns_name: Option<String>,
@@ -42,6 +43,7 @@ impl TailscaleStatusSnapshot {
             is_running: false,
             needs_login: false,
             magic_dns_enabled: false,
+            https_certificates_available: false,
             serve_enabled: false,
             host_name: None,
             dns_name: None,
@@ -92,12 +94,9 @@ pub fn discover_urls(port: u16, token: &str) -> UrlSet {
     let tailscale_https = tailscale_status
         .dns_name
         .as_deref()
+        .filter(|_| tailscale_status.serve_enabled)
         .map(|dns_name| ConnectionUrl {
-            label: if tailscale_status.serve_enabled {
-                "Tailscale HTTPS".to_string()
-            } else {
-                "Expected HTTPS URL after Tailscale Serve".to_string()
-            },
+            label: "Tailscale HTTPS".to_string(),
             url: format!("https://{dns_name}/?token={token}"),
         });
 
@@ -218,6 +217,7 @@ fn parse_tailscale_status(output: &[u8]) -> Option<TailscaleStatusSnapshot> {
             .current_tailnet
             .as_ref()
             .is_some_and(|tailnet| tailnet.magic_dns_enabled),
+        https_certificates_available: !status.cert_domains.is_empty(),
         serve_enabled: false,
         host_name: self_node.and_then(|node| node.host_name.clone()),
         dns_name,
@@ -293,6 +293,8 @@ struct TailscaleStatus {
     backend_state: Option<String>,
     #[serde(rename = "AuthURL")]
     auth_url: Option<String>,
+    #[serde(rename = "CertDomains", default)]
+    cert_domains: Vec<String>,
     #[serde(rename = "Self")]
     self_node: Option<TailscaleNode>,
     #[serde(rename = "CurrentTailnet")]
@@ -340,6 +342,9 @@ mod tests {
             br#"{
                 "BackendState": "Running",
                 "AuthURL": "",
+                "CertDomains": [
+                    "sparta.tail359cf9.ts.net"
+                ],
                 "Self": {
                     "HostName": "Sparta",
                     "DNSName": "sparta.tail359cf9.ts.net.",
@@ -360,6 +365,7 @@ mod tests {
         assert!(status.is_running);
         assert!(!status.needs_login);
         assert!(status.magic_dns_enabled);
+        assert!(status.https_certificates_available);
         assert_eq!(status.host_name.as_deref(), Some("Sparta"));
         assert_eq!(status.dns_name.as_deref(), Some("sparta.tail359cf9.ts.net"));
         assert_eq!(status.tailnet_name.as_deref(), Some("katteke727@gmail.com"));

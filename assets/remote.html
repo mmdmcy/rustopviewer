@@ -24,6 +24,7 @@
       --mono: "Cascadia Code", "SF Mono", "Consolas", monospace;
       --viewer-top-inset: 0px;
       --viewer-bottom-inset: 0px;
+      --return-dock-stack-offset: 0px;
     }
 
     * {
@@ -333,13 +334,6 @@
       letter-spacing: 0.02em;
     }
 
-    .action.restart {
-      border-color: rgba(248, 113, 113, 0.35);
-      background:
-        linear-gradient(180deg, rgba(127, 29, 29, 0.72), rgba(69, 10, 10, 0.92)),
-        linear-gradient(180deg, rgba(22, 34, 53, 0.94), rgba(11, 18, 29, 0.96));
-    }
-
     .text-row {
       display: grid;
       gap: 10px;
@@ -355,6 +349,8 @@
       color: var(--ink);
       padding: 13px;
       resize: vertical;
+      font-size: 16px;
+      line-height: 1.4;
       font-family: var(--mono);
     }
 
@@ -377,7 +373,7 @@
       position: absolute;
       left: auto;
       right: 12px;
-      bottom: calc(env(safe-area-inset-bottom) + 12px);
+      bottom: calc(env(safe-area-inset-bottom) + 12px + var(--return-dock-stack-offset));
       z-index: 6;
       display: none;
       gap: 8px;
@@ -387,7 +383,9 @@
     }
 
     body.ui-hidden .return-dock,
-    body.focus-mode .return-dock {
+    body.focus-mode .return-dock,
+    body.view-zoomed .return-dock,
+    body.keyboard-open .return-dock {
       display: flex;
     }
 
@@ -470,7 +468,7 @@
 
       .return-dock {
         right: 8px;
-        bottom: calc(env(safe-area-inset-bottom) + 8px);
+        bottom: calc(env(safe-area-inset-bottom) + 8px + var(--return-dock-stack-offset));
       }
     }
   </style>
@@ -539,8 +537,6 @@
           <textarea class="text-box" id="textInput" placeholder="Type text here" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send"></textarea>
           <button class="action" id="sendTextBtn">Send Text</button>
         </div>
-
-        <button class="action restart" id="restartAppBtn">Restart Host App</button>
       </div>
 
       <div class="hud-bottom">
@@ -554,6 +550,7 @@
       <div class="return-dock">
         <button class="chip" id="showUiBtn">Show UI</button>
         <button class="chip" id="quickKeyboardBtn">Keyboard</button>
+        <button class="chip" id="resetViewBtn">Reset View</button>
         <button class="chip compact" id="quickZoomOutBtn">-</button>
         <button class="chip compact" id="quickZoomResetBtn">1.0x</button>
         <button class="chip compact" id="quickZoomInBtn">+</button>
@@ -568,7 +565,8 @@
     const STATUS_INTERVAL_MS = 1800;
     const MOVE_INTERVAL_MS = 40;
     const LONG_PRESS_MS = 520;
-    const SCROLL_STEP_PX = 36;
+    const SCROLL_START_PX = 14;
+    const SCROLL_STEP_PX = 24;
 
     const state = {
       token: "",
@@ -581,10 +579,10 @@
       viewOffsetX: 0,
       viewOffsetY: 0,
       pointer: null,
+      touchGesture: null,
       frameReady: false,
       frameObjectUrl: null,
       sendingText: false,
-      restarting: false,
       textComposing: false,
       keyboardVisible: false,
       lastTextInputAt: 0
@@ -592,6 +590,7 @@
 
     const body = document.body;
     const frameSurface = document.getElementById("frameSurface");
+    const screenWrap = document.querySelector(".screen-wrap");
     const screenPan = document.getElementById("screenPan");
     const frameImage = document.getElementById("frameImage");
     const frameOverlay = document.getElementById("frameOverlay");
@@ -615,6 +614,7 @@
     const uiToggleBtn = document.getElementById("uiToggleBtn");
     const showUiBtn = document.getElementById("showUiBtn");
     const quickKeyboardBtn = document.getElementById("quickKeyboardBtn");
+    const resetViewBtn = document.getElementById("resetViewBtn");
     const quickZoomOutBtn = document.getElementById("quickZoomOutBtn");
     const quickZoomResetBtn = document.getElementById("quickZoomResetBtn");
     const quickZoomInBtn = document.getElementById("quickZoomInBtn");
@@ -625,7 +625,6 @@
     const scrollModeBtn = document.getElementById("scrollModeBtn");
     const textInput = document.getElementById("textInput");
     const sendTextBtn = document.getElementById("sendTextBtn");
-    const restartAppBtn = document.getElementById("restartAppBtn");
     let viewportLayoutFrame = 0;
 
     boot();
@@ -722,6 +721,10 @@
         toggleKeyboard();
       });
 
+      bindTap(resetViewBtn, () => {
+        restoreDefaultView();
+      });
+
       bindTap(quickZoomOutBtn, () => {
         zoomBy(-0.25);
       });
@@ -780,6 +783,9 @@
       });
 
       textInput.addEventListener("focus", () => {
+        if (state.viewScale > 1.001) {
+          resetZoom();
+        }
         state.keyboardVisible = true;
         state.toolsOpen = true;
         state.uiHidden = false;
@@ -791,6 +797,7 @@
           if (document.activeElement !== textInput) {
             state.keyboardVisible = false;
             syncUiState();
+            normalizeViewportAfterKeyboard();
           }
         }, 0);
       });
@@ -822,35 +829,6 @@
         }
       });
 
-      bindTap(restartAppBtn, async () => {
-        if (state.restarting) {
-          return;
-        }
-
-        state.restarting = true;
-        restartAppBtn.disabled = true;
-        restartAppBtn.textContent = "Restarting...";
-        setConnectionState("Restarting", "Rebuilding the host app", "warn");
-        showOverlay("Restarting host app", "ROV is shutting down and launching a fresh cargo run.");
-
-        try {
-          const response = await fetch("/api/restart", {
-            method: "POST",
-            headers: authHeaders()
-          });
-
-          if (!response.ok) {
-            throw new Error(`restart ${response.status}`);
-          }
-        } catch (error) {
-          state.restarting = false;
-          restartAppBtn.disabled = false;
-          restartAppBtn.textContent = "Restart Host App";
-          showOverlay("Restart failed", `Host restart request failed: ${error.message}`);
-          refreshStatus();
-        }
-      });
-
       document.querySelectorAll("[data-shortcut]").forEach((button) => {
         bindTap(button, () => {
           const keys = button.getAttribute("data-shortcut").split("+");
@@ -869,6 +847,10 @@
       window.addEventListener("pointermove", onPointerMove);
       window.addEventListener("pointerup", onPointerUp);
       window.addEventListener("pointercancel", onPointerCancel);
+      frameSurface.addEventListener("touchstart", onTouchStart, { passive: false });
+      frameSurface.addEventListener("touchmove", onTouchMove, { passive: false });
+      frameSurface.addEventListener("touchend", onTouchEnd, { passive: false });
+      frameSurface.addEventListener("touchcancel", onTouchCancel, { passive: false });
     }
 
     function resolveToken() {
@@ -928,20 +910,30 @@
       body.classList.toggle("tools-open", state.toolsOpen && !state.uiHidden);
       body.classList.toggle("ui-hidden", state.uiHidden);
       body.classList.toggle("focus-mode", state.focusMode);
+      body.classList.toggle("view-zoomed", state.viewScale > 1.001);
+      body.classList.toggle("keyboard-open", state.keyboardVisible);
       toolsToggleBtn.textContent = state.toolsOpen ? "Close" : "Tools";
       uiToggleBtn.textContent = state.uiHidden ? "Show UI" : "Hide UI";
       fullscreenBtn.textContent = state.focusMode ? "Exit Fill" : "Fill Screen";
-      zoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
-      quickZoomResetBtn.textContent = `${state.viewScale.toFixed(1)}x`;
       keyboardBtn.classList.toggle("active", state.keyboardVisible);
       quickKeyboardBtn.classList.toggle("active", state.keyboardVisible);
       directModeBtn.classList.toggle("active", !state.dragMode && !state.scrollMode);
       dragModeBtn.classList.toggle("active", state.dragMode);
       scrollModeBtn.classList.toggle("active", state.scrollMode);
-      zoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
-      quickZoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
+      showUiBtn.hidden = !state.uiHidden;
+      quickKeyboardBtn.hidden = state.keyboardVisible;
+      resetViewBtn.hidden = !state.keyboardVisible && state.viewScale <= 1.001;
+      syncViewUi();
       exitFullscreenBtn.hidden = !state.focusMode;
       scheduleViewportLayout();
+    }
+
+    function syncViewUi() {
+      const zoomLabel = `${state.viewScale.toFixed(1)}x`;
+      zoomResetBtn.textContent = zoomLabel;
+      quickZoomResetBtn.textContent = zoomLabel;
+      zoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
+      quickZoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
     }
 
     async function refreshStatus() {
@@ -1142,8 +1134,21 @@
         return;
       }
 
+      if (
+        state.touchGesture ||
+        (event.pointerType === "touch" && event.isPrimary === false) ||
+        (event.pointerType === "touch" && state.pointer && state.pointer.pointerId !== event.pointerId)
+      ) {
+        return;
+      }
+
       if (!isScreenPointerTarget(event.target)) {
         return;
+      }
+
+      if (state.keyboardVisible) {
+        dismissKeyboard(false);
+        syncUiState();
       }
 
       event.preventDefault();
@@ -1184,15 +1189,28 @@
         const deltaY = point.clientY - state.pointer.last.clientY;
         state.pointer.scrollResidualX += deltaX;
         state.pointer.scrollResidualY += deltaY;
-        const horizontal = consumeScrollSteps(state.pointer.scrollResidualX);
-        const vertical = consumeScrollSteps(state.pointer.scrollResidualY);
-        state.pointer.scrollResidualX -= horizontal * SCROLL_STEP_PX;
-        state.pointer.scrollResidualY -= vertical * SCROLL_STEP_PX;
+        const horizontalScroll = consumeScrollSteps(state.pointer.scrollResidualX);
+        const verticalScroll = consumeScrollSteps(state.pointer.scrollResidualY);
+        state.pointer.scrollResidualX -= horizontalScroll.consumed;
+        state.pointer.scrollResidualY -= verticalScroll.consumed;
         state.pointer.last = point;
-        if (horizontal || vertical) {
+        if (horizontalScroll.steps || verticalScroll.steps) {
           state.pointer.moved = true;
-          sendCommand({ type: "scroll", horizontal, vertical });
+          sendCommand({
+            type: "scroll",
+            horizontal: horizontalScroll.steps,
+            vertical: verticalScroll.steps
+          });
         }
+        return;
+      }
+
+      if (canPanView()) {
+        state.pointer.last = point;
+        state.viewOffsetX = state.pointer.startOffsetX + (point.clientX - state.pointer.start.clientX);
+        state.viewOffsetY = state.pointer.startOffsetY + (point.clientY - state.pointer.start.clientY);
+        clampViewOffset();
+        applyViewTransform();
         return;
       }
 
@@ -1226,6 +1244,12 @@
         return;
       }
 
+      if (canPanView() && state.pointer.moved) {
+        releaseTrackedPointer(event.pointerId);
+        state.pointer = null;
+        return;
+      }
+
       if (!state.pointer.moved && heldFor >= LONG_PRESS_MS) {
         sendCommand({ type: "click", x: point.x, y: point.y, button: "right", count: 1 });
       } else if (!state.pointer.moved) {
@@ -1236,6 +1260,57 @@
 
       releaseTrackedPointer(event.pointerId);
       state.pointer = null;
+    }
+
+    function onTouchStart(event) {
+      if (!isScreenPointerTarget(event.target) || event.touches.length < 2) {
+        return;
+      }
+
+      if (state.keyboardVisible) {
+        dismissKeyboard(false);
+        syncUiState();
+      }
+
+      event.preventDefault();
+      beginTouchGesture(event.touches);
+    }
+
+    function onTouchMove(event) {
+      if (!state.touchGesture) {
+        return;
+      }
+
+      if (event.touches.length < 2) {
+        endTouchGesture();
+        return;
+      }
+
+      event.preventDefault();
+      updateTouchGesture(event.touches);
+    }
+
+    function onTouchEnd(event) {
+      if (!state.touchGesture) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.touches.length >= 2) {
+        updateTouchGesture(event.touches);
+        return;
+      }
+
+      endTouchGesture();
+    }
+
+    function onTouchCancel(event) {
+      if (!state.touchGesture) {
+        return;
+      }
+
+      event.preventDefault();
+      endTouchGesture();
     }
 
     function onPointerCancel(event) {
@@ -1302,6 +1377,8 @@
       if (document.activeElement === textInput) {
         textInput.blur();
       }
+
+      normalizeViewportAfterKeyboard();
     }
 
     function focusTextInput() {
@@ -1319,6 +1396,10 @@
         dismissKeyboard(true);
         syncUiState();
         return;
+      }
+
+      if (state.viewScale > 1.001) {
+        resetZoom();
       }
 
       state.uiHidden = false;
@@ -1379,8 +1460,16 @@
       syncUiState();
     }
 
+    function restoreDefaultView() {
+      dismissKeyboard(false);
+      state.uiHidden = false;
+      resetZoom();
+      window.scrollTo(0, 0);
+      scheduleViewportLayout();
+    }
+
     function canPanView() {
-      return false;
+      return state.viewScale > 1.001 && !state.dragMode && !state.scrollMode;
     }
 
     function clampViewOffset() {
@@ -1416,8 +1505,14 @@
       }
 
       const topInset = measureOverlayInset(hudTop, viewerRect, "top");
+      const hudBottomInset = measureOverlayInset(hudBottom, viewerRect, "bottom");
+      const returnDockOffset = hudBottomInset > 0 ? hudBottomInset + 8 : 0;
+      frameSurface.style.setProperty(
+        "--return-dock-stack-offset",
+        `${Math.ceil(returnDockOffset)}px`
+      );
       const bottomInset = Math.max(
-        measureOverlayInset(hudBottom, viewerRect, "bottom"),
+        hudBottomInset,
         measureOverlayInset(returnDock, viewerRect, "bottom")
       );
 
@@ -1445,6 +1540,79 @@
       frameImage.style.transform = `scale(${state.viewScale})`;
     }
 
+    function beginTouchGesture(touches) {
+      const [firstTouch, secondTouch] = Array.from(touches).slice(0, 2);
+      if (!firstTouch || !secondTouch) {
+        return;
+      }
+
+      cancelActivePointer();
+      const startMidpoint = midpointFromTouches(firstTouch, secondTouch);
+      state.touchGesture = {
+        startDistance: Math.max(touchDistance(firstTouch, secondTouch), 1),
+        startScale: state.viewScale,
+        startOffsetX: state.viewOffsetX,
+        startOffsetY: state.viewOffsetY,
+        startMidpointX: startMidpoint.relativeX,
+        startMidpointY: startMidpoint.relativeY
+      };
+    }
+
+    function updateTouchGesture(touches) {
+      if (!state.touchGesture) {
+        return;
+      }
+
+      const [firstTouch, secondTouch] = Array.from(touches).slice(0, 2);
+      if (!firstTouch || !secondTouch) {
+        return;
+      }
+
+      const distance = Math.max(touchDistance(firstTouch, secondTouch), 1);
+      const midpoint = midpointFromTouches(firstTouch, secondTouch);
+      const nextScale = clamp(
+        Number(((state.touchGesture.startScale * distance) / state.touchGesture.startDistance).toFixed(2)),
+        1,
+        4
+      );
+
+      state.viewScale = nextScale <= 1.001 ? 1 : nextScale;
+      if (state.viewScale === 1) {
+        state.viewOffsetX = 0;
+        state.viewOffsetY = 0;
+      } else {
+        const scaleFactor = state.viewScale / state.touchGesture.startScale;
+        state.viewOffsetX =
+          midpoint.relativeX -
+          ((state.touchGesture.startMidpointX - state.touchGesture.startOffsetX) * scaleFactor);
+        state.viewOffsetY =
+          midpoint.relativeY -
+          ((state.touchGesture.startMidpointY - state.touchGesture.startOffsetY) * scaleFactor);
+        clampViewOffset();
+      }
+
+      applyViewTransform();
+      syncViewUi();
+    }
+
+    function endTouchGesture() {
+      state.touchGesture = null;
+      clampViewOffset();
+      applyViewTransform();
+      syncViewUi();
+    }
+
+    function normalizeViewportAfterKeyboard() {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+      scheduleViewportLayout();
+      window.setTimeout(() => {
+        window.scrollTo(0, 0);
+        scheduleViewportLayout();
+      }, 180);
+    }
+
     function showOverlay(title, message) {
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
@@ -1461,12 +1629,39 @@
       return Math.min(Math.max(value, min), max);
     }
 
+    function midpointFromTouches(firstTouch, secondTouch) {
+      const rect = screenWrap?.getBoundingClientRect() || frameSurface.getBoundingClientRect();
+      const clientX = (firstTouch.clientX + secondTouch.clientX) / 2;
+      const clientY = (firstTouch.clientY + secondTouch.clientY) / 2;
+      return {
+        clientX,
+        clientY,
+        relativeX: clientX - (rect.left + rect.width / 2),
+        relativeY: clientY - (rect.top + rect.height / 2)
+      };
+    }
+
+    function touchDistance(firstTouch, secondTouch) {
+      return Math.hypot(
+        secondTouch.clientX - firstTouch.clientX,
+        secondTouch.clientY - firstTouch.clientY
+      );
+    }
+
     function consumeScrollSteps(delta) {
-      if (Math.abs(delta) < SCROLL_STEP_PX) {
-        return 0;
+      const magnitude = Math.abs(delta);
+      if (magnitude < SCROLL_START_PX) {
+        return { steps: 0, consumed: 0 };
       }
 
-      return Math.sign(delta) * Math.floor(Math.abs(delta) / SCROLL_STEP_PX);
+      const sign = Math.sign(delta);
+      const extraMagnitude = magnitude - SCROLL_START_PX;
+      const steps = 1 + Math.floor(extraMagnitude / SCROLL_STEP_PX);
+      const consumed = sign * (SCROLL_START_PX + Math.max(0, steps - 1) * SCROLL_STEP_PX);
+      return {
+        steps: sign * steps,
+        consumed
+      };
     }
 
     function releaseTrackedPointer(pointerId) {

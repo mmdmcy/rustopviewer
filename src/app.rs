@@ -11,7 +11,6 @@ use eframe::{
 use crate::{
     capture,
     network::{self, ConnectionUrl, RemoteAccessMode, TailscaleStatusSnapshot, UrlSet},
-    restart,
     state::AppState,
 };
 
@@ -20,7 +19,6 @@ pub struct RustOpViewerApp {
     urls: UrlSet,
     last_network_refresh: Instant,
     toast_message: Option<(String, Instant)>,
-    restart_in_progress: bool,
 }
 
 impl RustOpViewerApp {
@@ -32,7 +30,6 @@ impl RustOpViewerApp {
             state,
             last_network_refresh: Instant::now(),
             toast_message: None,
-            restart_in_progress: false,
         }
     }
 
@@ -66,25 +63,6 @@ impl RustOpViewerApp {
             }
             Err(err) => {
                 self.show_toast(format!("Tailscale HTTPS setup failed: {err}"));
-            }
-        }
-    }
-
-    fn trigger_source_restart(&mut self, ctx: &egui::Context) {
-        if self.restart_in_progress {
-            return;
-        }
-
-        self.restart_in_progress = true;
-
-        match restart::queue_source_restart() {
-            Ok(()) => {
-                self.show_toast("Restart queued. ROV is rebuilding from source.");
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            Err(err) => {
-                self.restart_in_progress = false;
-                self.show_toast(format!("Restart failed: {err}"));
             }
         }
     }
@@ -158,7 +136,9 @@ impl RustOpViewerApp {
                 }
             }
 
-            let can_enable_https = status.is_running && status.magic_dns_enabled;
+            let can_enable_https = status.is_running
+                && status.magic_dns_enabled
+                && status.https_certificates_available;
             let https_button_label = if status.serve_enabled {
                 "Refresh HTTPS Status"
             } else {
@@ -231,7 +211,16 @@ impl RustOpViewerApp {
             }
         }
 
-        if status.is_running && !status.serve_enabled {
+        if status.is_running && status.magic_dns_enabled && !status.https_certificates_available {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(
+                    "Tailscale HTTPS certificates are not enabled for this tailnet yet. Turn on HTTPS certificates in the Tailscale admin DNS settings, then refresh here.",
+                )
+                .small()
+                .color(Color32::from_rgb(245, 158, 11)),
+            );
+        } else if status.is_running && !status.serve_enabled {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -252,10 +241,6 @@ impl App for RustOpViewerApp {
         self.maybe_refresh_urls();
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_millis(400));
-
-        if self.state.take_restart_requested() {
-            self.trigger_source_restart(&ctx);
-        }
 
         let preferred_url = self.urls.preferred.clone();
         let mobile_url = self.urls.mobile_data_preferred.clone();
@@ -403,9 +388,6 @@ impl App for RustOpViewerApp {
                             }
                         }
 
-                        if ui.button("Restart From Source").clicked() {
-                            self.trigger_source_restart(&ctx);
-                        }
                     });
 
                     ui.add_space(6.0);
