@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
-use serde_json::Value;
 use std::{net::Ipv4Addr, process::Command};
 
 #[derive(Debug, Clone)]
@@ -14,6 +13,7 @@ pub struct UrlSet {
     pub preferred: ConnectionUrl,
     pub mobile_data_preferred: Option<ConnectionUrl>,
     pub tailscale_http: Option<ConnectionUrl>,
+    pub tailscale_serve_http: Option<ConnectionUrl>,
     pub tailscale_https: Option<ConnectionUrl>,
     pub loopback: ConnectionUrl,
     pub tailscale_status: TailscaleStatusSnapshot,
@@ -27,10 +27,17 @@ pub struct TailscaleStatusSnapshot {
     pub magic_dns_enabled: bool,
     pub https_certificates_available: bool,
     pub serve_enabled: bool,
+    pub serve_https_enabled: bool,
     pub host_name: Option<String>,
     pub dns_name: Option<String>,
     pub tailnet_name: Option<String>,
     pub tailscale_ips: Vec<Ipv4Addr>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TailscaleServeSnapshot {
+    http_url: Option<String>,
+    https_url: Option<String>,
 }
 
 impl TailscaleStatusSnapshot {
@@ -42,6 +49,7 @@ impl TailscaleStatusSnapshot {
             magic_dns_enabled: false,
             https_certificates_available: false,
             serve_enabled: false,
+            serve_https_enabled: false,
             host_name: None,
             dns_name: None,
             tailnet_name: None,
@@ -54,9 +62,9 @@ impl TailscaleStatusSnapshot {
             RemoteAccessMode::NeedsTailscaleInstall
         } else if self.needs_login || !self.is_running {
             RemoteAccessMode::NeedsTailscaleLogin
-        } else if self.serve_enabled && self.dns_name.is_some() {
+        } else if self.serve_https_enabled && self.dns_name.is_some() {
             RemoteAccessMode::ReadyHttps
-        } else if !self.tailscale_ips.is_empty() {
+        } else if self.serve_enabled || !self.tailscale_ips.is_empty() {
             RemoteAccessMode::ReadyTailnet
         } else {
             RemoteAccessMode::LocalOnly
@@ -79,6 +87,7 @@ pub fn discover_urls(port: u16) -> UrlSet {
         url: format!("http://127.0.0.1:{port}/"),
     };
     let tailscale_status = discover_tailscale_status();
+    let serve_snapshot = discover_tailscale_serve();
     let tailscale_http = tailscale_status
         .tailscale_ips
         .first()
@@ -87,34 +96,40 @@ pub fn discover_urls(port: u16) -> UrlSet {
             label: "Tailscale tailnet".to_string(),
             url: format!("http://{ip}:{port}/"),
         });
+    let tailscale_serve_http = serve_snapshot.http_url.map(|url| ConnectionUrl {
+        label: "Tailscale phone URL".to_string(),
+        url: append_trailing_slash(url),
+    });
 
-    let tailscale_https = tailscale_status
-        .dns_name
-        .as_deref()
-        .filter(|_| tailscale_status.serve_enabled)
-        .map(|dns_name| ConnectionUrl {
-            label: "Tailscale HTTPS".to_string(),
-            url: format!("https://{dns_name}/"),
-        });
+    let tailscale_https = serve_snapshot.https_url.map(|url| ConnectionUrl {
+        label: "Tailscale HTTPS".to_string(),
+        url: append_trailing_slash(url),
+    });
 
     let preferred = tailscale_https
         .clone()
+        .or_else(|| tailscale_serve_http.clone())
         .or_else(|| tailscale_http.clone())
         .unwrap_or_else(|| loopback.clone());
 
     UrlSet {
         preferred,
-        mobile_data_preferred: tailscale_https.clone().or_else(|| tailscale_http.clone()),
+        mobile_data_preferred: tailscale_https
+            .clone()
+            .or_else(|| tailscale_serve_http.clone())
+            .or_else(|| tailscale_http.clone()),
         tailscale_http,
+        tailscale_serve_http,
         tailscale_https,
         loopback,
         tailscale_status,
     }
 }
 
-pub fn enable_tailscale_https(port: u16) -> Result<()> {
+pub fn enable_tailscale_phone_url(port: u16) -> Result<()> {
     let port_text = port.to_string();
-    run_tailscale_command(&["serve", "--bg", "--yes", &port_text]).map(|_| ())
+    let target = format!("127.0.0.1:{port}");
+    run_tailscale_command(&["serve", "--bg", "--yes", "--http", &port_text, &target]).map(|_| ())
 }
 
 pub fn discover_tailscale_status() -> TailscaleStatusSnapshot {
@@ -126,7 +141,10 @@ pub fn discover_tailscale_status() -> TailscaleStatusSnapshot {
         is_installed: true,
         ..TailscaleStatusSnapshot::unavailable()
     });
-    snapshot.serve_enabled = discover_tailscale_serve_enabled();
+    let serve_snapshot = discover_tailscale_serve();
+    snapshot.serve_enabled =
+        serve_snapshot.http_url.is_some() || serve_snapshot.https_url.is_some();
+    snapshot.serve_https_enabled = serve_snapshot.https_url.is_some();
     snapshot
 }
 
@@ -160,8 +178,12 @@ fn parse_tailscale_status(output: &[u8]) -> Option<TailscaleStatusSnapshot> {
             .current_tailnet
             .as_ref()
             .is_some_and(|tailnet| tailnet.magic_dns_enabled),
-        https_certificates_available: !status.cert_domains.is_empty(),
+        https_certificates_available: status
+            .cert_domains
+            .as_ref()
+            .is_some_and(|domains| !domains.is_empty()),
         serve_enabled: false,
+        serve_https_enabled: false,
         host_name: self_node.and_then(|node| node.host_name.clone()),
         dns_name,
         tailnet_name: status.current_tailnet.and_then(|tailnet| tailnet.name),
@@ -169,19 +191,40 @@ fn parse_tailscale_status(output: &[u8]) -> Option<TailscaleStatusSnapshot> {
     })
 }
 
-fn discover_tailscale_serve_enabled() -> bool {
+fn discover_tailscale_serve() -> TailscaleServeSnapshot {
     let Some(output) = tailscale_serve_status_output() else {
-        return false;
+        return TailscaleServeSnapshot::default();
     };
 
-    parse_tailscale_serve_enabled(&output)
+    parse_tailscale_serve_status(&output)
 }
 
-fn parse_tailscale_serve_enabled(output: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(output)
-        .ok()
-        .and_then(|value| value.as_object().map(|object| !object.is_empty()))
-        .unwrap_or(false)
+fn parse_tailscale_serve_status(output: &[u8]) -> TailscaleServeSnapshot {
+    let text = String::from_utf8_lossy(output);
+    if text.trim().is_empty() || text.contains("No serve config") {
+        return TailscaleServeSnapshot::default();
+    }
+
+    let mut urls = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("http://") || line.starts_with("https://"))
+        .map(|line| {
+            line.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+
+    urls.sort_by_key(|url| (!url.contains(".ts.net"), url.len()));
+    let https_url = urls.iter().find(|url| url.starts_with("https://")).cloned();
+    let http_url = urls.iter().find(|url| url.starts_with("http://")).cloned();
+
+    TailscaleServeSnapshot {
+        http_url,
+        https_url,
+    }
 }
 
 fn tailscale_status_output() -> Option<Vec<u8>> {
@@ -189,7 +232,14 @@ fn tailscale_status_output() -> Option<Vec<u8>> {
 }
 
 fn tailscale_serve_status_output() -> Option<Vec<u8>> {
-    run_tailscale_command(&["serve", "status", "--json"]).ok()
+    run_tailscale_command(&["serve", "status"]).ok()
+}
+
+fn append_trailing_slash(mut url: String) -> String {
+    if !url.ends_with('/') {
+        url.push('/');
+    }
+    url
 }
 
 fn run_tailscale_command(args: &[&str]) -> Result<Vec<u8>> {
@@ -236,8 +286,8 @@ struct TailscaleStatus {
     backend_state: Option<String>,
     #[serde(rename = "AuthURL")]
     auth_url: Option<String>,
-    #[serde(rename = "CertDomains", default)]
-    cert_domains: Vec<String>,
+    #[serde(rename = "CertDomains")]
+    cert_domains: Option<Vec<String>>,
     #[serde(rename = "Self")]
     self_node: Option<TailscaleNode>,
     #[serde(rename = "CurrentTailnet")]
@@ -265,7 +315,7 @@ struct TailscaleTailnet {
 #[cfg(test)]
 mod tests {
     use super::{
-        RemoteAccessMode, TailscaleStatusSnapshot, parse_tailscale_serve_enabled,
+        RemoteAccessMode, TailscaleStatusSnapshot, parse_tailscale_serve_status,
         parse_tailscale_status,
     };
     use std::net::Ipv4Addr;
@@ -307,11 +357,51 @@ mod tests {
     }
 
     #[test]
+    fn tailscale_status_allows_null_cert_domains() {
+        let status = parse_tailscale_status(
+            br#"{
+                "BackendState": "Running",
+                "AuthURL": "",
+                "CertDomains": null,
+                "Self": {
+                    "HostName": "Sparta",
+                    "DNSName": "sparta.tail359cf9.ts.net.",
+                    "TailscaleIPs": [
+                        "100.124.204.65",
+                        "fd7a:115c:a1e0::3401:cca0"
+                    ]
+                },
+                "CurrentTailnet": {
+                    "Name": "katteke727@gmail.com",
+                    "MagicDNSEnabled": true
+                }
+            }"#,
+        )
+        .expect("status json with null cert domains should deserialize");
+
+        assert!(status.is_installed);
+        assert!(status.is_running);
+        assert!(!status.needs_login);
+        assert_eq!(status.remote_access_mode(), RemoteAccessMode::ReadyTailnet);
+        assert!(!status.https_certificates_available);
+        assert_eq!(status.tailscale_ips, vec![Ipv4Addr::new(100, 124, 204, 65)]);
+    }
+
+    #[test]
     fn tailscale_serve_status_detects_empty_and_non_empty_json() {
-        assert!(!parse_tailscale_serve_enabled(br#"{}"#));
-        assert!(parse_tailscale_serve_enabled(
-            br#"{"TCP":{"443":{"HTTPS":true}}}"#
-        ));
+        let empty = parse_tailscale_serve_status(b"No serve config\n");
+        assert!(empty.http_url.is_none());
+        assert!(empty.https_url.is_none());
+
+        let active = parse_tailscale_serve_status(
+            br#"http://sparta:45080 (tailnet only)
+http://sparta.tail359cf9.ts.net:45080 (tailnet only)
+|-- / proxy http://127.0.0.1:45080"#,
+        );
+        assert_eq!(
+            active.http_url.as_deref(),
+            Some("http://sparta.tail359cf9.ts.net:45080")
+        );
     }
 
     #[test]
@@ -344,6 +434,7 @@ mod tests {
         );
 
         let https_ready = TailscaleStatusSnapshot {
+            serve_https_enabled: true,
             dns_name: Some("sparta.tail359cf9.ts.net".to_string()),
             magic_dns_enabled: true,
             serve_enabled: true,
