@@ -14,11 +14,18 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use std::{net::SocketAddr, sync::Arc, thread};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+    thread,
+    time::Duration,
+};
 use tokio::net::TcpListener;
 
 use crate::{
     input::{self, InputRequest},
+    network,
     security::{PairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME, SessionAuthError},
     state::AppState,
 };
@@ -56,20 +63,64 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
         .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state.clone());
 
-    let address = SocketAddr::from(([127, 0, 0, 1], state.port()));
-    let listener = TcpListener::bind(address)
-        .await
-        .with_context(|| format!("failed to bind the remote control server on {address}"))?;
+    let loopback_address = SocketAddr::from(([127, 0, 0, 1], state.port()));
+    let loopback_listener = TcpListener::bind(loopback_address).await.with_context(|| {
+        format!("failed to bind the remote control server on {loopback_address}")
+    })?;
 
-    tracing::info!(
-        "Remote control server listening on {}",
-        listener.local_addr()?
+    let mut active_tailnet_ips = HashSet::new();
+    let mut servers = tokio::task::JoinSet::new();
+    spawn_listener(
+        &mut servers,
+        loopback_listener,
+        ListenerKind::Loopback,
+        app.clone(),
     );
-    axum::serve(listener, app)
-        .await
-        .context("failed while serving remote control requests")?;
+    refresh_tailscale_listeners(
+        &mut servers,
+        &mut active_tailnet_ips,
+        state.port(),
+        app.clone(),
+    )
+    .await;
 
-    Ok(())
+    loop {
+        tokio::select! {
+            joined = servers.join_next() => {
+                let Some(joined) = joined else {
+                    return Err(anyhow::anyhow!("remote control server stopped unexpectedly"));
+                };
+
+                match joined {
+                    Ok((ListenerKind::Loopback, Err(err))) => {
+                        return Err(err).context("loopback listener stopped");
+                    }
+                    Ok((ListenerKind::Loopback, Ok(()))) => {
+                        return Err(anyhow::anyhow!("loopback listener exited unexpectedly"));
+                    }
+                    Ok((ListenerKind::Tailscale(ip), Err(err))) => {
+                        tracing::warn!(error = %err, ip = %ip, "Tailscale listener stopped");
+                        active_tailnet_ips.remove(&ip);
+                    }
+                    Ok((ListenerKind::Tailscale(ip), Ok(()))) => {
+                        tracing::warn!(ip = %ip, "Tailscale listener exited");
+                        active_tailnet_ips.remove(&ip);
+                    }
+                    Err(err) => {
+                        return Err(anyhow::anyhow!(err).context("remote control listener task crashed"));
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                refresh_tailscale_listeners(
+                    &mut servers,
+                    &mut active_tailnet_ips,
+                    state.port(),
+                    app.clone(),
+                ).await;
+            }
+        }
+    }
 }
 
 async fn index() -> Response {
@@ -329,4 +380,63 @@ fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
                 .map(str::trim)
                 .any(|candidate| candidate == "*" || candidate == etag)
         })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ListenerKind {
+    Loopback,
+    Tailscale(Ipv4Addr),
+}
+
+fn spawn_listener(
+    servers: &mut tokio::task::JoinSet<(ListenerKind, Result<()>)>,
+    listener: TcpListener,
+    kind: ListenerKind,
+    app: Router,
+) {
+    servers.spawn(async move {
+        let address = listener.local_addr().ok();
+        match kind {
+            ListenerKind::Loopback => {
+                if let Some(address) = address {
+                    tracing::info!("Remote control server listening on {address} (loopback)");
+                }
+            }
+            ListenerKind::Tailscale(ip) => {
+                if let Some(address) = address {
+                    tracing::info!("Remote control server listening on {address} (tailscale {ip})");
+                }
+            }
+        }
+
+        let result = axum::serve(listener, app)
+            .await
+            .context("failed while serving remote control requests");
+        (kind, result)
+    });
+}
+
+async fn refresh_tailscale_listeners(
+    servers: &mut tokio::task::JoinSet<(ListenerKind, Result<()>)>,
+    active_tailnet_ips: &mut HashSet<Ipv4Addr>,
+    port: u16,
+    app: Router,
+) {
+    let tailscale_ips = network::discover_tailscale_status().tailscale_ips;
+    for ip in tailscale_ips {
+        if active_tailnet_ips.contains(&ip) {
+            continue;
+        }
+
+        let address = SocketAddr::new(IpAddr::V4(ip), port);
+        match TcpListener::bind(address).await {
+            Ok(listener) => {
+                active_tailnet_ips.insert(ip);
+                spawn_listener(servers, listener, ListenerKind::Tailscale(ip), app.clone());
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, ip = %ip, "Failed to bind the Tailscale listener");
+            }
+        }
+    }
 }
