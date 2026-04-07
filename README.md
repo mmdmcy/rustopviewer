@@ -94,6 +94,8 @@ Notable current limitations:
 cargo run --release
 ```
 
+On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
+
 ### Use it from iPhone
 
 1. Start Tailscale on the laptop and on the iPhone.
