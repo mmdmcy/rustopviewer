@@ -189,10 +189,13 @@ pub fn spawn_input_worker() -> Result<Sender<InputCommand>> {
     Ok(tx)
 }
 
-pub fn command_from_request(request: InputRequest, monitor: &MonitorInfo) -> Result<InputCommand> {
+pub fn command_from_request(
+    request: InputRequest,
+    monitor: Option<&MonitorInfo>,
+) -> Result<InputCommand> {
     Ok(match request {
         InputRequest::Move { x, y } => InputCommand::Move {
-            point: normalize_point(monitor, x, y)?,
+            point: normalize_request_point(monitor, x, y)?,
         },
         InputRequest::Click {
             x,
@@ -200,7 +203,7 @@ pub fn command_from_request(request: InputRequest, monitor: &MonitorInfo) -> Res
             button,
             count,
         } => InputCommand::Click {
-            point: normalize_point(monitor, x, y)?,
+            point: normalize_request_point(monitor, x, y)?,
             button,
             count: count.max(1),
         },
@@ -210,7 +213,7 @@ pub fn command_from_request(request: InputRequest, monitor: &MonitorInfo) -> Res
             button,
             action,
         } => InputCommand::Button {
-            point: normalize_point(monitor, x, y)?,
+            point: normalize_request_point(monitor, x, y)?,
             button,
             action,
         },
@@ -242,6 +245,11 @@ pub fn command_from_request(request: InputRequest, monitor: &MonitorInfo) -> Res
             InputCommand::Shortcut { keys }
         }
     })
+}
+
+fn normalize_request_point(monitor: Option<&MonitorInfo>, x: f32, y: f32) -> Result<ScreenPoint> {
+    let monitor = monitor.ok_or_else(|| anyhow!("pointer input requires an active monitor"))?;
+    normalize_point(monitor, x, y)
 }
 
 fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
@@ -590,7 +598,10 @@ fn default_click_count() -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_point, normalize_text_for_injection};
+    use super::{
+        InputCommand, InputRequest, command_from_request, normalize_point,
+        normalize_text_for_injection,
+    };
     use crate::model::MonitorInfo;
 
     #[test]
@@ -619,5 +630,30 @@ mod tests {
         let normalized = normalize_text_for_injection("hello\r\nworld\rfrom\nrov");
 
         assert_eq!(normalized, "hello\nworld\nfrom\nrov");
+    }
+
+    #[test]
+    fn text_requests_do_not_require_a_monitor() {
+        let command = command_from_request(
+            InputRequest::Text {
+                text: "hello".to_string(),
+            },
+            None,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            command,
+            InputCommand::Text { text } if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn pointer_requests_require_a_monitor() {
+        let error = command_from_request(InputRequest::Move { x: 0.5, y: 0.5 }, None)
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(error, "pointer input requires an active monitor");
     }
 }

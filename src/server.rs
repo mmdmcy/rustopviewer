@@ -243,14 +243,22 @@ async fn input(
 ) -> ApiResult<StatusCode> {
     authorize_input_session(&headers, &state)?;
 
-    let monitor = state.selected_monitor().ok_or_else(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "No monitor is currently selected".to_string(),
-        )
-    })?;
+    let monitor = match &request {
+        InputRequest::Move { .. } | InputRequest::Click { .. } | InputRequest::Button { .. } => {
+            Some(state.selected_monitor().ok_or_else(|| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "No monitor is currently selected".to_string(),
+                )
+            })?)
+        }
+        InputRequest::Scroll { .. }
+        | InputRequest::Text { .. }
+        | InputRequest::Key { .. }
+        | InputRequest::Shortcut { .. } => None,
+    };
 
-    let command = input::command_from_request(request, &monitor)
+    let command = input::command_from_request(request, monitor.as_ref())
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
 
     state
