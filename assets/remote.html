@@ -924,6 +924,24 @@
         state.lastTextInputAt = Date.now();
       });
 
+      textInput.addEventListener("keydown", (event) => {
+        if (
+          event.key !== "Enter" ||
+          event.shiftKey ||
+          event.ctrlKey ||
+          event.altKey ||
+          event.metaKey ||
+          event.repeat ||
+          event.isComposing ||
+          state.textComposing
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+        submitTextInput({ restoreFocusOnFailure: true });
+      });
+
       textInput.addEventListener("focus", () => {
         if (state.viewScale > 1.001) {
           resetZoom();
@@ -945,31 +963,8 @@
         }, 0);
       });
 
-      bindTap(sendTextBtn, async () => {
-        if (state.sendingText || !state.keyboardEnabled) {
-          return;
-        }
-
-        await settleTextInput();
-        const text = textInput.value;
-        if (!text) {
-          return;
-        }
-
-        state.sendingText = true;
-        sendTextBtn.disabled = true;
-        sendTextBtn.textContent = "Sending...";
-
-        try {
-          const ok = await sendCommand({ type: "text", text });
-          if (ok) {
-            textInput.value = "";
-          }
-        } finally {
-          state.sendingText = false;
-          sendTextBtn.disabled = false;
-          sendTextBtn.textContent = "Send Text";
-        }
+      bindTap(sendTextBtn, () => {
+        submitTextInput();
       });
 
       document.querySelectorAll("[data-shortcut]").forEach((button) => {
@@ -1336,11 +1331,47 @@
       }
     }
 
-    async function sendCommand(body) {
-      if (!isCommandAllowed(body)) {
+    async function submitTextInput(options = {}) {
+      if (state.sendingText || !state.keyboardEnabled) {
         return false;
       }
 
+      await settleTextInput();
+      const text = textInput.value;
+      if (!text) {
+        return false;
+      }
+
+      state.sendingText = true;
+      sendTextBtn.disabled = true;
+      sendTextBtn.textContent = "Sending...";
+
+      try {
+        const result = await sendCommand({ type: "text", text }, { reportFailure: true });
+        if (result.ok) {
+          textInput.value = "";
+          state.lastTextInputAt = 0;
+          return true;
+        }
+
+        if (options.restoreFocusOnFailure && state.keyboardEnabled) {
+          focusTextInput();
+        }
+
+        return false;
+      } finally {
+        state.sendingText = false;
+        sendTextBtn.disabled = false;
+        sendTextBtn.textContent = "Send Text";
+      }
+    }
+
+    async function sendCommand(body, options = {}) {
+      if (!isCommandAllowed(body)) {
+        return { ok: false, status: 0, message: "" };
+      }
+
+      const reportFailure = !!options.reportFailure;
       markRecentInteraction();
       try {
         const response = await fetch("/api/input", {
@@ -1354,17 +1385,54 @@
 
         if (response.status === 401) {
           showPairing("Pair this phone", "Your remote session expired. Enter a fresh pairing code from Windows.");
-          return false;
+          return {
+            ok: false,
+            status: response.status,
+            message: "Your remote session expired. Pair this phone again."
+          };
         }
 
         if (response.status === 403) {
           setConnectionState("View only", "Remote input is disabled on the Windows app", "warn");
-          return false;
+          return {
+            ok: false,
+            status: response.status,
+            message: "Remote input is disabled on the Windows app."
+          };
         }
 
-        return response.ok;
-      } catch {
-        return false;
+        if (!response.ok) {
+          let message = "";
+
+          if (reportFailure) {
+            try {
+              message = (await response.text()).trim();
+            } catch {
+              message = "";
+            }
+
+            setConnectionState(
+              response.status >= 500 ? "Input failed" : "Input blocked",
+              message || `Input request failed with status ${response.status}.`,
+              response.status >= 500 ? "error" : "warn"
+            );
+          }
+
+          return { ok: false, status: response.status, message };
+        }
+
+        return { ok: true, status: response.status, message: "" };
+      } catch (error) {
+        const message =
+          error && typeof error.message === "string" && error.message.trim()
+            ? error.message.trim()
+            : "Failed to reach the Windows app.";
+
+        if (reportFailure) {
+          setConnectionState("Offline", message, "error");
+        }
+
+        return { ok: false, status: 0, message };
       }
     }
 
