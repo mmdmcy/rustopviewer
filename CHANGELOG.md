@@ -13,7 +13,7 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Screen capture pipeline for the selected monitor.
 - Mouse, keyboard, scroll, and text injection support.
 - Tailscale-friendly connection workflow.
-- Initial open-source repository scaffolding, governance docs, and CI.
+- Initial open-source repository scaffolding and governance docs.
 - Linux host support at the code level alongside the existing Windows host support.
 - Desktop-browser wheel, right-click, and middle-click controls in the built-in client.
 
