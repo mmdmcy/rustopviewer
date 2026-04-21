@@ -17,7 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
     init_logging();
-    let run_mode = parse_run_mode()?;
+    let cli = parse_cli()?;
 
     let config_store = config::ConfigStore::new()?;
     let config = config_store.load_or_create()?;
@@ -38,10 +38,20 @@ fn main() -> Result<()> {
         .ensure_valid_selected_monitor()
         .context("failed to select an active monitor")?;
 
+    if cli.print_pair_code {
+        let pair_code = state.generate_pair_code();
+        tracing::info!(
+            code = %pair_code.code,
+            expires_in_seconds = pair_code.expires_in.as_secs(),
+            remaining_attempts = pair_code.remaining_attempts,
+            "Host-approved one-time pairing code generated"
+        );
+    }
+
     capture::spawn_capture_worker(state.clone());
     server::spawn_server(state.clone());
 
-    match run_mode {
+    match cli.run_mode {
         RunMode::Tui => {
             tui::run(state).context("failed to run the RustOp Viewer terminal UI")?;
         }
@@ -59,12 +69,19 @@ enum RunMode {
     Headless,
 }
 
-fn parse_run_mode() -> Result<RunMode> {
+struct CliOptions {
+    run_mode: RunMode,
+    print_pair_code: bool,
+}
+
+fn parse_cli() -> Result<CliOptions> {
     let mut run_mode = RunMode::Tui;
+    let mut print_pair_code = false;
 
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "--headless" => run_mode = RunMode::Headless,
+            "--print-pair-code" => print_pair_code = true,
             "-h" | "--help" => {
                 print_help();
                 process::exit(0);
@@ -73,7 +90,10 @@ fn parse_run_mode() -> Result<RunMode> {
         }
     }
 
-    Ok(run_mode)
+    Ok(CliOptions {
+        run_mode,
+        print_pair_code,
+    })
 }
 
 fn print_help() {
@@ -82,11 +102,12 @@ fn print_help() {
 RustOp Viewer
 
 Usage:
-  rustopviewer [--headless]
+  rustopviewer [--headless] [--print-pair-code]
 
 Options:
-  --headless   Run the host runtime without the local terminal UI.
-  -h, --help   Show this help text.
+  --headless         Run the host runtime without the local terminal UI.
+  --print-pair-code  Generate and log one host-approved one-time pairing code at startup.
+  -h, --help         Show this help text.
 "
     );
 }
@@ -101,7 +122,7 @@ fn run_headless(state: Arc<AppState>) {
         "RustOp Viewer headless runtime is active"
     );
     tracing::info!(
-        "Initial pairing still requires a one-time host-approved pairing code from a TUI session or an already trusted browser"
+        "Initial pairing still requires a host-approved one-time pairing code or an already trusted browser"
     );
 
     loop {

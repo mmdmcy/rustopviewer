@@ -18,6 +18,7 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Desktop-browser wheel, right-click, and middle-click controls in the built-in client.
 - Persistent trusted-browser records that can reissue normal sessions after a one-time pairing.
 - A supported `--headless` runtime for unattended deployments that already trust at least one browser.
+- A `--print-pair-code` startup option for issuing one host-approved pairing code while running headless.
 
 ### Changed
 
