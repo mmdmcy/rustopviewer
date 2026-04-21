@@ -55,6 +55,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 
 - Cross-platform host TUI for Linux and Windows
 - Optional `--headless` host runtime for unattended restart-safe deployments after the first approval
+- Optional `--print-pair-code` startup flow for one-time first pairing when you are running headless
 - Monitor selection
 - Browser client that works on desktop and mobile browsers
 - Screen streaming from the selected monitor
@@ -115,6 +116,12 @@ For unattended deployments after you have already approved at least one trusted 
 cargo run --release -- --headless
 ```
 
+To issue one one-time pairing code at startup without opening the TUI:
+
+```bash
+cargo run --release -- --headless --print-pair-code
+```
+
 On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
 
 ### Use it from a browser
@@ -137,6 +144,7 @@ If you want ROV to stay available without a terminal window after you have alrea
 4. Revisit from the remembered browser and let it restore a fresh short-lived session automatically.
 
 Headless mode is meant for already approved browsers. A brand-new browser still needs a host-generated one-time pairing code first.
+If you are deliberately launching headless for that first approval, start it with `--print-pair-code` so the host logs one code at startup.
 
 ### Optional: Tailscale private URL
 
