@@ -7,6 +7,7 @@ ROV currently ships as:
 - A cross-platform host TUI for Linux and Windows
 - A built-in browser client served by the host itself
 - A host-approved pairing flow that exchanges one-time codes for short-lived sessions
+- Optional remembered-browser trust for devices you approve once and revisit later
 - Loopback-first network exposure with optional Tailscale URL discovery
 - Reverse-proxy-friendly browser paths for subpath or hostname-based publishing
 - In-terminal readiness checks for local and private-browser access paths
@@ -53,6 +54,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 ## Current Features
 
 - Cross-platform host TUI for Linux and Windows
+- Optional `--headless` host runtime for unattended restart-safe deployments after the first approval
 - Monitor selection
 - Browser client that works on desktop and mobile browsers
 - Screen streaming from the selected monitor
@@ -62,6 +64,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Keyboard shortcuts and plain-text input
 - Touch zoom and panning on mobile browsers
 - Pair-approved control that automatically restores pointer and keyboard unless the host is elevated, with host-side toggles for view-only when desired
+- Remembered browsers can automatically refresh their short-lived session after host restarts or daily session expiry
 - Loopback plus optional Tailscale-tailnet host listeners
 - Relative browser API paths so the client can sit behind a stripped reverse-proxy prefix
 
@@ -74,6 +77,7 @@ Notable current limitations:
 - Linux builds currently depend on desktop capture libraries provided by the host OS
 - The host session must already be awake and unlocked
 - Remote input is intentionally locked out while ROV runs elevated
+- Remembered access still depends on the browser keeping its cookies and the host not revoking that device
 - No audio streaming
 - No clipboard sync
 - No file transfer
@@ -105,6 +109,12 @@ Depending on the desktop session and distro, additional capture-related packages
 cargo run --release
 ```
 
+For unattended deployments after you have already approved at least one trusted browser:
+
+```bash
+cargo run --release -- --headless
+```
+
 On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
 
 ### Use it from a browser
@@ -114,7 +124,19 @@ On Windows, the repo's Cargo config runs a copied temp executable so a previousl
 3. If you want a private tailnet URL, start Tailscale and use **Enable Tailscale URL**.
 4. If you want a reverse-proxy or tunnel deployment, publish the loopback listener instead of opening a normal LAN listener.
 5. Generate a one-time pairing code in the host TUI and enter it in the browser page.
-6. Use the remote page to control the desktop. If you want view-only later, turn either input scope off in the host TUI.
+6. Leave **Remember this browser on this device** enabled if you want that browser to reconnect without another code later.
+7. Use the remote page to control the desktop. If you want view-only later, turn either input scope off in the host TUI.
+
+### Optional: headless runtime after first approval
+
+If you want ROV to stay available without a terminal window after you have already approved a browser on that device:
+
+1. Start ROV normally once and pair a browser with **Remember this browser on this device** enabled.
+2. Stop the TUI.
+3. Launch `rustopviewer --headless`.
+4. Revisit from the remembered browser and let it restore a fresh short-lived session automatically.
+
+Headless mode is meant for already approved browsers. A brand-new browser still needs a host-generated one-time pairing code first.
 
 ### Optional: Tailscale private URL
 
@@ -184,9 +206,13 @@ cargo test --all-targets --all-features
 
 - The host runtime listens on loopback and, when available, the current Tailscale tailnet IPs, not on the normal LAN by default.
 - Opening the browser page is not enough to gain control. A new browser session must be paired with a one-time code generated in the host TUI.
+- A successfully paired browser can optionally become a remembered browser on that device and later refresh its normal session automatically.
+- Headless runtime is intended for already approved browsers; a new browser still needs a host-approved one-time code first.
 - Approved sessions are cookie-based, single-device, host-revocable, and stay paired for up to 24 hours without an idle timeout.
+- Remembered-browser trust survives host restarts until the host revokes it, but it still depends on the browser retaining its cookies.
 - A successful pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
 - Running ROV elevated forces remote input back to view-only.
+- The host TUI can revoke all remembered browsers immediately.
 - Reverse proxies and tunnels should target loopback rather than widening the app's own bind surface.
 
 ## Roadmap Highlights

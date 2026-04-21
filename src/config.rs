@@ -179,4 +179,8 @@ impl ConfigStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn trusted_browsers_path(&self) -> PathBuf {
+        self.path.with_file_name("trusted-browsers.json")
+    }
 }

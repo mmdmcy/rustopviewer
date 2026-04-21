@@ -28,7 +28,7 @@ use crate::{
 
 const NETWORK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TOAST_TTL: Duration = Duration::from_secs(4);
-const ACTIONS: [ActionId; 11] = [
+const ACTIONS: [ActionId; 12] = [
     ActionId::RefreshNetwork,
     ActionId::RefreshDisplays,
     ActionId::TailscaleUrl,
@@ -38,6 +38,7 @@ const ACTIONS: [ActionId; 11] = [
     ActionId::ToggleKeyboard,
     ActionId::GeneratePairingCode,
     ActionId::DisconnectSession,
+    ActionId::ForgetTrustedBrowsers,
     ActionId::PanicStop,
     ActionId::Quit,
 ];
@@ -136,6 +137,7 @@ enum ActionId {
     ToggleKeyboard,
     GeneratePairingCode,
     DisconnectSession,
+    ForgetTrustedBrowsers,
     PanicStop,
     Quit,
 }
@@ -460,6 +462,31 @@ impl HostTui {
             lines.push(Line::from("Session: no approved remote browser"));
         }
 
+        let trusted_browsers = self.state.trusted_browser_snapshots();
+        if trusted_browsers.is_empty() {
+            lines.push(Line::from("Trusted browsers: none remembered"));
+        } else {
+            lines.push(Line::from(format!(
+                "Trusted browsers: {} remembered",
+                trusted_browsers.len()
+            )));
+            for browser in trusted_browsers.iter().take(3) {
+                lines.push(Line::from(format!(
+                    "{} [{}]   seen {} ago   added {} ago",
+                    browser.label,
+                    browser.id,
+                    format_duration_compact(browser.last_seen_ago),
+                    format_duration_compact(browser.created_ago)
+                )));
+            }
+            if trusted_browsers.len() > 3 {
+                lines.push(Line::from(format!(
+                    "... plus {} more remembered browser(s)",
+                    trusted_browsers.len() - 3
+                )));
+            }
+        }
+
         Paragraph::new(Text::from(lines))
             .block(
                 Block::default()
@@ -513,9 +540,16 @@ impl HostTui {
                     self.set_toast("No remote session is currently active");
                 }
             }
+            ActionId::ForgetTrustedBrowsers => match self.state.revoke_trusted_browsers() {
+                Ok(0) => self.set_toast("No trusted browsers were remembered"),
+                Ok(count) => {
+                    self.set_toast(format!("Forgot {count} trusted browser(s) and cleared the current session"))
+                }
+                Err(err) => self.set_toast(format!("Trusted browser cleanup failed: {err}")),
+            },
             ActionId::PanicStop => match self.state.panic_stop() {
                 Ok(()) => {
-                    self.set_toast("Remote input disabled and every pairing/session was cleared")
+                    self.set_toast("Remote input disabled and every pairing, session, and trusted browser was cleared")
                 }
                 Err(err) => self.set_toast(format!("Panic stop failed: {err}")),
             },
@@ -686,6 +720,10 @@ impl HostTui {
             ),
             ActionId::GeneratePairingCode => "Generate pairing code".to_string(),
             ActionId::DisconnectSession => "Disconnect remote session".to_string(),
+            ActionId::ForgetTrustedBrowsers => format!(
+                "Forget trusted browsers ({})",
+                self.state.trusted_browser_count()
+            ),
             ActionId::PanicStop => "Panic stop".to_string(),
             ActionId::Quit => "Quit".to_string(),
         }
@@ -720,8 +758,11 @@ impl HostTui {
             ActionId::DisconnectSession => {
                 "Disconnect the currently approved browser session without changing input scopes."
             }
+            ActionId::ForgetTrustedBrowsers => {
+                "Revoke every remembered browser and clear the active remote session."
+            }
             ActionId::PanicStop => {
-                "Immediately disable remote input and clear both the current session and pairing code."
+                "Immediately disable remote input and clear the pairing code, active session, and every remembered browser."
             }
             ActionId::Quit => "Exit the host TUI and stop the host process.",
         }
@@ -755,11 +796,14 @@ fn remote_access_mode_label(mode: RemoteAccessMode) -> &'static str {
 
 fn format_duration_compact(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
+    let days = total_seconds / 86_400;
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
 
-    if hours > 0 {
+    if days > 0 {
+        format!("{days}d {}h", (total_seconds % 86_400) / 3600)
+    } else if hours > 0 {
         format!("{hours}h {minutes}m")
     } else if minutes > 0 {
         format!("{minutes}m {seconds}s")

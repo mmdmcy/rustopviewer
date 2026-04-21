@@ -9,7 +9,10 @@ use crate::{
     config::{AppConfig, ConfigStore, StreamProfile, StreamSettings},
     input::InputCommand,
     model::{LatestFrame, MonitorInfo, StatusResponse},
-    security::{PairCodeSnapshot, SessionAuthError, SessionGrant, SessionSnapshot, SessionStore},
+    security::{
+        IssuePairingError, PairCodeSnapshot, SessionAuthError, SessionGrant, SessionSnapshot,
+        SessionStore, TrustedBrowserAuthError, TrustedBrowserSnapshot, TrustedBrowserStore,
+    },
 };
 
 pub struct AppState {
@@ -29,6 +32,7 @@ impl AppState {
         mut config: AppConfig,
         monitors: Vec<MonitorInfo>,
         input_tx: Sender<InputCommand>,
+        trusted_browser_store: TrustedBrowserStore,
         is_elevated: bool,
     ) -> Result<Self> {
         config.normalize();
@@ -40,7 +44,7 @@ impl AppState {
             latest_frame: RwLock::new(None),
             capture_error: RwLock::new(None),
             input_tx,
-            sessions: RwLock::new(SessionStore::new()),
+            sessions: RwLock::new(SessionStore::new(trusted_browser_store)?),
             is_elevated,
         })
     }
@@ -118,7 +122,7 @@ impl AppState {
     pub fn set_remote_pointer_enabled(&self, enabled: bool) -> Result<()> {
         if self.is_elevated && enabled {
             return Err(anyhow!(
-                "remote pointer control stays disabled while the app is running as Administrator"
+                "remote pointer control stays disabled while the host runtime is elevated"
             ));
         }
 
@@ -131,7 +135,7 @@ impl AppState {
     pub fn set_remote_keyboard_enabled(&self, enabled: bool) -> Result<()> {
         if self.is_elevated && enabled {
             return Err(anyhow!(
-                "remote keyboard control stays disabled while the app is running as Administrator"
+                "remote keyboard control stays disabled while the host runtime is elevated"
             ));
         }
 
@@ -167,7 +171,7 @@ impl AppState {
 
         let mut sessions = self.sessions.write();
         sessions.clear_pair_code();
-        sessions.clear_session();
+        sessions.clear_trusted_browsers()?;
         Ok(())
     }
 
@@ -190,16 +194,41 @@ impl AppState {
             .map(ToString::to_string)
     }
 
+    pub fn trusted_browser_snapshots(&self) -> Vec<TrustedBrowserSnapshot> {
+        self.sessions.read().trusted_browser_snapshots()
+    }
+
+    pub fn trusted_browser_count(&self) -> usize {
+        self.sessions.read().trusted_browser_count()
+    }
+
     pub fn revoke_remote_session(&self) {
         self.sessions.write().clear_session();
+    }
+
+    pub fn revoke_trusted_browsers(&self) -> Result<usize> {
+        self.sessions.write().clear_trusted_browsers()
     }
 
     pub fn issue_pairing_session(
         &self,
         code: &str,
         user_agent: Option<String>,
-    ) -> Result<SessionGrant, crate::security::PairingError> {
-        self.sessions.write().exchange_pair_code(code, user_agent)
+        remember_browser: bool,
+    ) -> Result<SessionGrant, IssuePairingError> {
+        self.sessions
+            .write()
+            .issue_pairing_session(code, user_agent, remember_browser)
+    }
+
+    pub fn restore_trusted_browser_session(
+        &self,
+        trusted_token: &str,
+        user_agent: Option<String>,
+    ) -> Result<SessionGrant, TrustedBrowserAuthError> {
+        self.sessions
+            .write()
+            .restore_trusted_browser_session(trusted_token, user_agent)
     }
 
     pub fn authorize_session(&self, session_id: &str) -> Result<SessionSnapshot, SessionAuthError> {
