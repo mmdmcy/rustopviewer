@@ -27,7 +27,10 @@ use tokio::net::TcpListener;
 use crate::{
     input::{self, InputRequest},
     network,
-    security::{PairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME, SessionAuthError},
+    security::{
+        IssuePairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME, SessionAuthError,
+        TRUSTED_BROWSER_COOKIE_NAME, TRUSTED_BROWSER_MAX_LIFETIME, TrustedBrowserAuthError,
+    },
     state::AppState,
 };
 
@@ -58,6 +61,7 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/pair", post(pair))
+        .route("/api/session/restore", post(restore_session))
         .route("/api/status", get(status))
         .route("/api/frame.jpg", get(frame))
         .route("/api/input", post(input))
@@ -138,6 +142,12 @@ async fn index() -> Response {
 #[derive(Deserialize)]
 struct PairRequest {
     code: String,
+    #[serde(default = "default_true")]
+    remember_browser: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 async fn pair(
@@ -153,7 +163,7 @@ async fn pair(
         .map(ToString::to_string);
 
     let grant = state
-        .issue_pairing_session(&request.code, user_agent)
+        .issue_pairing_session(&request.code, user_agent, request.remember_browser)
         .map_err(pairing_error_response)?;
     state
         .enable_remote_control_for_paired_client()
@@ -163,6 +173,45 @@ async fn pair(
                 "failed to arm remote control after pairing".to_string(),
             )
         })?;
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let secure_cookie = request_is_https(&headers);
+    let cookie_value = session_cookie_header(&grant.session_id, secure_cookie).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to create the session cookie".to_string(),
+        )
+    })?;
+    response.headers_mut().insert(SET_COOKIE, cookie_value);
+    if let Some(trusted_browser_token) = grant.trusted_browser_token.as_deref() {
+        let cookie_value = trusted_browser_cookie_header(trusted_browser_token, secure_cookie)
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to create the trusted browser cookie".to_string(),
+                )
+            })?;
+        response.headers_mut().append(SET_COOKIE, cookie_value);
+    }
+    apply_security_headers(response.headers_mut(), false);
+    Ok(response)
+}
+
+async fn restore_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let trusted_browser_token = trusted_browser_cookie(&headers)?;
+    let user_agent = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let grant = state
+        .restore_trusted_browser_session(&trusted_browser_token, user_agent)
+        .map_err(trusted_browser_restore_error_response)?;
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     let secure_cookie = request_is_https(&headers);
@@ -285,28 +334,35 @@ fn authorize_input_session(headers: &HeaderMap, state: &AppState) -> ApiResult<(
 }
 
 fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
-    let cookies = headers
+    cookie_value(headers, SESSION_COOKIE_NAME).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "The remote session is missing or expired. Pair this browser again.".to_string(),
+        )
+    })
+}
+
+fn trusted_browser_cookie(headers: &HeaderMap) -> ApiResult<String> {
+    cookie_value(headers, TRUSTED_BROWSER_COOKIE_NAME).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "This browser is not remembered on the host. Pair it again.".to_string(),
+        )
+    })
+}
+
+fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    headers
         .get(COOKIE)
         .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "The remote session is missing or expired. Pair this browser again.".to_string(),
-            )
-        })?;
-
-    cookies
-        .split(';')
-        .map(str::trim)
-        .find_map(|cookie| cookie.split_once('='))
-        .filter(|(name, _)| *name == SESSION_COOKIE_NAME)
-        .map(|(_, value)| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "The remote session is missing or expired. Pair this browser again.".to_string(),
-            )
+        .and_then(|cookies| {
+            cookies
+                .split(';')
+                .map(str::trim)
+                .find_map(|cookie| cookie.split_once('='))
+                .filter(|(name, _)| *name == cookie_name)
+                .map(|(_, value)| value.trim().to_string())
+                .filter(|value| !value.is_empty())
         })
 }
 
@@ -323,15 +379,38 @@ fn session_error_response(error: SessionAuthError) -> (StatusCode, String) {
     }
 }
 
-fn pairing_error_response(error: PairingError) -> (StatusCode, String) {
+fn pairing_error_response(error: IssuePairingError) -> (StatusCode, String) {
     match error {
-        PairingError::TooManyAttempts => (StatusCode::TOO_MANY_REQUESTS, error.to_string()),
-        PairingError::MissingCode | PairingError::InvalidCode => {
-            (StatusCode::BAD_REQUEST, error.to_string())
-        }
-        PairingError::NoActiveCode | PairingError::CodeExpired => {
-            (StatusCode::UNAUTHORIZED, error.to_string())
-        }
+        IssuePairingError::Pairing(error) => match error {
+            crate::security::PairingError::TooManyAttempts => {
+                (StatusCode::TOO_MANY_REQUESTS, error.to_string())
+            }
+            crate::security::PairingError::MissingCode
+            | crate::security::PairingError::InvalidCode => {
+                (StatusCode::BAD_REQUEST, error.to_string())
+            }
+            crate::security::PairingError::NoActiveCode
+            | crate::security::PairingError::CodeExpired => {
+                (StatusCode::UNAUTHORIZED, error.to_string())
+            }
+        },
+        IssuePairingError::Storage => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to persist the trusted browser record".to_string(),
+        ),
+    }
+}
+
+fn trusted_browser_restore_error_response(error: TrustedBrowserAuthError) -> (StatusCode, String) {
+    match error {
+        TrustedBrowserAuthError::Missing | TrustedBrowserAuthError::Invalid => (
+            StatusCode::UNAUTHORIZED,
+            "This browser is not currently remembered on the host. Pair it again.".to_string(),
+        ),
+        TrustedBrowserAuthError::Storage => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to refresh the remembered browser session".to_string(),
+        ),
     }
 }
 
@@ -344,6 +423,20 @@ fn request_is_https(headers: &HeaderMap) -> bool {
             .get("forwarded")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.to_ascii_lowercase().contains("proto=https"))
+}
+
+fn trusted_browser_cookie_header(
+    trusted_browser_token: &str,
+    secure: bool,
+) -> Result<HeaderValue, InvalidHeaderValue> {
+    let mut value = format!(
+        "{TRUSTED_BROWSER_COOKIE_NAME}={trusted_browser_token}; HttpOnly; Path=/; SameSite=Strict; Max-Age={}",
+        TRUSTED_BROWSER_MAX_LIFETIME.as_secs()
+    );
+    if secure {
+        value.push_str("; Secure");
+    }
+    HeaderValue::from_str(&value)
 }
 
 fn session_cookie_header(
@@ -382,6 +475,13 @@ fn apply_security_headers(headers: &mut HeaderMap, is_html: bool) {
             CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(
                 "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            ),
+        );
+    } else {
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
             ),
         );
     }

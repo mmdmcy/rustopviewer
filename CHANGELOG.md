@@ -16,6 +16,8 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Initial open-source repository scaffolding and governance docs.
 - Linux host support at the code level alongside the existing Windows host support.
 - Desktop-browser wheel, right-click, and middle-click controls in the built-in client.
+- Persistent trusted-browser records that can reissue normal sessions after a one-time pairing.
+- A supported `--headless` runtime for unattended deployments that already trust at least one browser.
 
 ### Changed
 
@@ -23,3 +25,4 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Reworked input injection to use the cross-platform `enigo` backend instead of a Windows-only `SendInput` path.
 - Generalized host and browser copy from a phone-only Windows workflow to Linux/Windows hosts with desktop or mobile browsers.
 - Updated the browser client to use relative API paths so it can sit behind a stripped reverse-proxy prefix.
+- Added host-side trust revocation and browser-side remembered-device session restoration.

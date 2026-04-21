@@ -17,6 +17,7 @@ rustopviewer currently has four main layers:
 
 - `src/server.rs` serves the browser UI and the authenticated API endpoints.
 - `assets/remote.html` contains the current desktop/mobile browser client.
+- `src/security.rs` owns the one-time pairing flow, short-lived remote sessions, and remembered-browser trust records.
 
 ## Input injection
 

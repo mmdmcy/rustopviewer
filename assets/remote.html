@@ -204,6 +204,22 @@
       letter-spacing: 0.08em;
     }
 
+    .remember-browser {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      user-select: none;
+    }
+
+    .remember-browser input {
+      inline-size: 18px;
+      block-size: 18px;
+      accent-color: var(--accent);
+      flex: 0 0 auto;
+    }
+
     .pair-hint {
       min-height: 1.2em;
       color: var(--muted);
@@ -548,6 +564,10 @@
           <span id="overlayMessage">Open the newest browser URL from the host TUI if this does not clear on its own.</span>
           <div class="pairing-panel" id="pairingPanel" hidden>
             <input class="pair-code-input" id="pairCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Pairing code">
+            <label class="remember-browser" for="rememberBrowserToggle">
+              <input id="rememberBrowserToggle" type="checkbox" checked>
+              <span>Remember this browser on this device</span>
+            </label>
             <button class="action" id="pairButton">Pair Browser</button>
             <div class="pair-hint" id="pairHint">Generate a fresh one-time pairing code in the host TUI.</div>
           </div>
@@ -688,6 +708,8 @@
       pointerEnabled: false,
       keyboardEnabled: false,
       pairingBusy: false,
+      trustedRestoreInFlight: false,
+      trustedRestoreAvailable: true,
       frameTimerId: 0,
       frameRequestInFlight: false,
       lastFrameEtag: "",
@@ -710,6 +732,7 @@
     const overlayMessage = document.getElementById("overlayMessage");
     const pairingPanel = document.getElementById("pairingPanel");
     const pairCodeInput = document.getElementById("pairCodeInput");
+    const rememberBrowserToggle = document.getElementById("rememberBrowserToggle");
     const pairButton = document.getElementById("pairButton");
     const pairHint = document.getElementById("pairHint");
     const connectionPill = document.getElementById("connectionPill");
@@ -1153,7 +1176,37 @@
       quickZoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
     }
 
-    async function refreshStatus() {
+    async function restoreTrustedSession() {
+      if (state.trustedRestoreInFlight || !state.trustedRestoreAvailable) {
+        return false;
+      }
+
+      state.trustedRestoreInFlight = true;
+      try {
+        const response = await fetch(apiUrl("api/session/restore"), {
+          method: "POST",
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+
+        if (response.ok) {
+          state.trustedRestoreAvailable = true;
+          return true;
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          state.trustedRestoreAvailable = false;
+        }
+
+        return false;
+      } catch {
+        return false;
+      } finally {
+        state.trustedRestoreInFlight = false;
+      }
+    }
+
+    async function refreshStatus(allowTrustedRestore = true) {
       try {
         const response = await fetch(apiUrl("api/status"), {
           cache: "no-store",
@@ -1161,6 +1214,10 @@
         });
 
         if (response.status === 401) {
+          if (allowTrustedRestore && await restoreTrustedSession()) {
+            return refreshStatus(false);
+          }
+
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
@@ -1224,12 +1281,13 @@
       }
     }
 
-    async function refreshFrame() {
+    async function refreshFrame(allowTrustedRestore = true) {
       if (state.frameRequestInFlight) {
         return;
       }
 
       state.frameRequestInFlight = true;
+      let immediateRetry = false;
       try {
         const headers = {};
         if (state.lastFrameEtag) {
@@ -1243,6 +1301,11 @@
         });
 
         if (response.status === 401) {
+          if (allowTrustedRestore && await restoreTrustedSession()) {
+            immediateRetry = true;
+            return;
+          }
+
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
@@ -1287,7 +1350,7 @@
         }
       } finally {
         state.frameRequestInFlight = false;
-        scheduleNextFrame(nextFrameDelayMs());
+        scheduleNextFrame(immediateRetry ? 0 : nextFrameDelayMs());
       }
     }
 
@@ -1383,6 +1446,7 @@
       }
 
       const reportFailure = !!options.reportFailure;
+      const allowTrustedRestore = options.allowTrustedRestore !== false;
       markRecentInteraction();
       try {
         const response = await fetch(apiUrl("api/input"), {
@@ -1395,6 +1459,13 @@
         });
 
         if (response.status === 401) {
+          if (allowTrustedRestore && await restoreTrustedSession()) {
+            return sendCommand(body, {
+              ...options,
+              allowTrustedRestore: false
+            });
+          }
+
           showPairing("Pair this browser", "Your remote session expired. Enter a fresh pairing code from the host TUI.");
           return {
             ok: false,
@@ -2135,14 +2206,20 @@
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({ code }),
+          body: JSON.stringify({
+            code,
+            remember_browser: rememberBrowserToggle?.checked !== false
+          }),
           credentials: "same-origin"
         });
 
         if (response.ok) {
           pairCodeInput.value = "";
-          pairHint.textContent = "Browser paired. Loading the live desktop...";
-          await refreshStatus();
+          state.trustedRestoreAvailable = true;
+          pairHint.textContent = rememberBrowserToggle?.checked === false
+            ? "Browser paired. Loading the live desktop..."
+            : "Browser paired and remembered on this device. Loading the live desktop...";
+          await refreshStatus(false);
           markRecentInteraction();
           scheduleNextFrame(0);
           return;
