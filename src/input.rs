@@ -1,25 +1,10 @@
 use anyhow::{Context, Result, anyhow};
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use serde::Deserialize;
 use std::{
     borrow::Cow,
-    mem::size_of,
     sync::mpsc::{self, Sender},
     thread,
-};
-use windows::Win32::UI::{
-    Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE,
-        MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
-        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-        MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_CONTROL,
-        VK_MENU, VK_SHIFT, VkKeyScanW,
-    },
-    WindowsAndMessaging::{
-        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN, WHEEL_DELTA,
-    },
 };
 
 use crate::model::MonitorInfo;
@@ -254,16 +239,15 @@ fn normalize_request_point(monitor: Option<&MonitorInfo>, x: f32, y: f32) -> Res
 
 fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
     match command {
-        InputCommand::Move { point } => move_mouse_absolute(point),
+        InputCommand::Move { point } => move_mouse_absolute(enigo, point),
         InputCommand::Click {
             point,
             button,
             count,
         } => {
-            move_mouse_absolute(point)?;
+            move_mouse_absolute(enigo, point)?;
             for _ in 0..count {
-                mouse_button(button, true)?;
-                mouse_button(button, false)?;
+                mouse_button(enigo, button, Direction::Click)?;
             }
             Ok(())
         }
@@ -272,19 +256,19 @@ fn execute_command(enigo: &mut Enigo, command: InputCommand) -> Result<()> {
             button,
             action,
         } => {
-            move_mouse_absolute(point)?;
-            mouse_button(button, matches!(action, ButtonAction::Press))
+            move_mouse_absolute(enigo, point)?;
+            mouse_button(enigo, button, to_enigo_direction(action))
         }
         InputCommand::Scroll {
             horizontal,
             vertical,
         } => {
             if horizontal != 0 {
-                mouse_scroll(horizontal, false)?;
+                mouse_scroll(enigo, horizontal, Axis::Horizontal)?;
             }
 
             if vertical != 0 {
-                mouse_scroll(vertical, true)?;
+                mouse_scroll(enigo, vertical, Axis::Vertical)?;
             }
 
             Ok(())
@@ -312,7 +296,8 @@ fn inject_text(enigo: &mut Enigo, text: &str) -> Result<()> {
                 .key(Key::Tab, Direction::Click)
                 .context("failed to inject a tab")?,
             '\0' => return Err(anyhow!("text input contained a null byte")),
-            _ => send_text_character(character)
+            _ => enigo
+                .key(Key::Unicode(character), Direction::Click)
                 .with_context(|| format!("failed to inject character {character:?}"))?,
         }
     }
@@ -354,43 +339,22 @@ fn normalize_point(monitor: &MonitorInfo, x: f32, y: f32) -> Result<ScreenPoint>
     })
 }
 
-fn move_mouse_absolute(point: ScreenPoint) -> Result<()> {
-    let (x, y) = map_to_virtual_desktop(point)?;
-    send_mouse(
-        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-        x,
-        y,
-        0,
-    )
+fn move_mouse_absolute(enigo: &mut Enigo, point: ScreenPoint) -> Result<()> {
+    enigo
+        .move_mouse(point.x, point.y, Coordinate::Abs)
+        .context("failed to move the mouse cursor")
 }
 
-fn mouse_button(button: RemoteMouseButton, pressed: bool) -> Result<()> {
-    let flags = match (button, pressed) {
-        (RemoteMouseButton::Left, true) => MOUSEEVENTF_LEFTDOWN,
-        (RemoteMouseButton::Left, false) => MOUSEEVENTF_LEFTUP,
-        (RemoteMouseButton::Right, true) => MOUSEEVENTF_RIGHTDOWN,
-        (RemoteMouseButton::Right, false) => MOUSEEVENTF_RIGHTUP,
-        (RemoteMouseButton::Middle, true) => MOUSEEVENTF_MIDDLEDOWN,
-        (RemoteMouseButton::Middle, false) => MOUSEEVENTF_MIDDLEUP,
-    };
-
-    send_mouse(flags, 0, 0, 0)
+fn mouse_button(enigo: &mut Enigo, button: RemoteMouseButton, direction: Direction) -> Result<()> {
+    enigo
+        .button(to_enigo_button(button), direction)
+        .context("failed to inject mouse button input")
 }
 
-fn mouse_scroll(amount: i32, vertical: bool) -> Result<()> {
-    let flags = if vertical {
-        MOUSEEVENTF_WHEEL
-    } else {
-        MOUSEEVENTF_HWHEEL
-    };
-
-    let scaled_amount = if vertical {
-        amount.saturating_mul(-(WHEEL_DELTA as i32))
-    } else {
-        amount.saturating_mul(WHEEL_DELTA as i32)
-    };
-
-    send_mouse(flags, 0, 0, scaled_amount)
+fn mouse_scroll(enigo: &mut Enigo, amount: i32, axis: Axis) -> Result<()> {
+    enigo
+        .scroll(amount, axis)
+        .context("failed to inject mouse wheel input")
 }
 
 fn normalize_text_for_injection(text: &str) -> Cow<'_, str> {
@@ -401,163 +365,15 @@ fn normalize_text_for_injection(text: &str) -> Cow<'_, str> {
     }
 }
 
-fn send_text_character(character: char) -> Result<()> {
-    if let Some((vk, modifiers)) = map_character_to_virtual_key(character)? {
-        send_character_as_virtual_key(vk, modifiers)
-    } else {
-        send_unicode_char(character)
-    }
+fn to_enigo_direction(action: impl IntoEnigoDirection) -> Direction {
+    action.into_direction()
 }
 
-fn map_character_to_virtual_key(character: char) -> Result<Option<(VIRTUAL_KEY, u8)>> {
-    let code_unit = match u16::try_from(character as u32) {
-        Ok(code_unit) => code_unit,
-        Err(_) => return Ok(None),
-    };
-
-    let mapping = unsafe { VkKeyScanW(code_unit) };
-    if mapping == -1 {
-        return Ok(None);
-    }
-
-    let vk = VIRTUAL_KEY((mapping as u16) & 0x00ff);
-    let modifiers = ((mapping as u16) >> 8) as u8;
-    Ok(Some((vk, modifiers)))
-}
-
-fn send_character_as_virtual_key(vk: VIRTUAL_KEY, modifiers: u8) -> Result<()> {
-    press_text_modifiers(modifiers)?;
-
-    let send_result = send_inputs(&[
-        keyboard_input(KEYBD_EVENT_FLAGS(0), vk, 0),
-        keyboard_input(KEYEVENTF_KEYUP, vk, 0),
-    ]);
-    let release_result = release_text_modifiers(modifiers);
-
-    send_result.and(release_result)
-}
-
-fn press_text_modifiers(modifiers: u8) -> Result<()> {
-    for modifier in modifier_keys(modifiers) {
-        send_inputs(&[keyboard_input(KEYBD_EVENT_FLAGS(0), modifier, 0)])
-            .with_context(|| format!("failed to press modifier key {}", modifier.0))?;
-    }
-
-    Ok(())
-}
-
-fn release_text_modifiers(modifiers: u8) -> Result<()> {
-    for modifier in modifier_keys(modifiers).into_iter().rev() {
-        send_inputs(&[keyboard_input(KEYEVENTF_KEYUP, modifier, 0)])
-            .with_context(|| format!("failed to release modifier key {}", modifier.0))?;
-    }
-
-    Ok(())
-}
-
-fn modifier_keys(modifiers: u8) -> Vec<VIRTUAL_KEY> {
-    let mut keys = Vec::with_capacity(3);
-    if modifiers & 1 != 0 {
-        keys.push(VK_SHIFT);
-    }
-    if modifiers & 2 != 0 {
-        keys.push(VK_CONTROL);
-    }
-    if modifiers & 4 != 0 {
-        keys.push(VK_MENU);
-    }
-    keys
-}
-
-fn send_unicode_char(character: char) -> Result<()> {
-    let mut buffer = [0; 2];
-
-    for &utf16_unit in character.encode_utf16(&mut buffer).iter() {
-        let inputs = [
-            keyboard_input(KEYEVENTF_UNICODE, VIRTUAL_KEY(0), utf16_unit),
-            keyboard_input(
-                KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                VIRTUAL_KEY(0),
-                utf16_unit,
-            ),
-        ];
-
-        send_inputs(&inputs)?;
-    }
-
-    Ok(())
-}
-
-fn keyboard_input(flags: KEYBD_EVENT_FLAGS, vk: VIRTUAL_KEY, scan: u16) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: vk,
-                wScan: scan,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    }
-}
-
-fn send_mouse(flags: MOUSE_EVENT_FLAGS, dx: i32, dy: i32, mouse_data: i32) -> Result<()> {
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx,
-                dy,
-                mouseData: mouse_data as u32,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-
-    send_inputs(&[input])
-}
-
-fn send_inputs(inputs: &[INPUT]) -> Result<()> {
-    let expected = u32::try_from(inputs.len()).context("too many input events to inject")?;
-    let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
-
-    if sent == expected {
-        Ok(())
-    } else {
-        Err(anyhow!("SendInput sent {sent} of {expected} events"))
-    }
-}
-
-fn map_to_virtual_desktop(point: ScreenPoint) -> Result<(i32, i32)> {
-    let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
-    let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
-    let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
-    let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
-
-    if width <= 1 || height <= 1 {
-        return Err(anyhow!("failed to determine the virtual desktop bounds"));
-    }
-
-    let max_x = i64::from(width - 1);
-    let max_y = i64::from(height - 1);
-    let relative_x = i64::from((point.x - left).clamp(0, width - 1));
-    let relative_y = i64::from((point.y - top).clamp(0, height - 1));
-
-    let mapped_x = ((relative_x * 65535) + (max_x / 2)) / max_x;
-    let mapped_y = ((relative_y * 65535) + (max_y / 2)) / max_y;
-
-    Ok((mapped_x as i32, mapped_y as i32))
-}
-
-fn to_enigo_direction(action: KeyAction) -> Direction {
-    match action {
-        KeyAction::Press => Direction::Press,
-        KeyAction::Release => Direction::Release,
-        KeyAction::Click => Direction::Click,
+fn to_enigo_button(button: RemoteMouseButton) -> Button {
+    match button {
+        RemoteMouseButton::Left => Button::Left,
+        RemoteMouseButton::Right => Button::Right,
+        RemoteMouseButton::Middle => Button::Middle,
     }
 }
 
@@ -581,14 +397,37 @@ fn to_enigo_key(key: RemoteKey) -> Key {
         RemoteKey::Shift => Key::Shift,
         RemoteKey::Alt => Key::Alt,
         RemoteKey::Meta => Key::Meta,
-        RemoteKey::A => Key::A,
-        RemoteKey::C => Key::C,
-        RemoteKey::D => Key::D,
-        RemoteKey::L => Key::L,
-        RemoteKey::R => Key::R,
-        RemoteKey::V => Key::V,
-        RemoteKey::X => Key::X,
+        RemoteKey::A => Key::Unicode('a'),
+        RemoteKey::C => Key::Unicode('c'),
+        RemoteKey::D => Key::Unicode('d'),
+        RemoteKey::L => Key::Unicode('l'),
+        RemoteKey::R => Key::Unicode('r'),
+        RemoteKey::V => Key::Unicode('v'),
+        RemoteKey::X => Key::Unicode('x'),
         RemoteKey::F4 => Key::F4,
+    }
+}
+
+trait IntoEnigoDirection {
+    fn into_direction(self) -> Direction;
+}
+
+impl IntoEnigoDirection for KeyAction {
+    fn into_direction(self) -> Direction {
+        match self {
+            KeyAction::Press => Direction::Press,
+            KeyAction::Release => Direction::Release,
+            KeyAction::Click => Direction::Click,
+        }
+    }
+}
+
+impl IntoEnigoDirection for ButtonAction {
+    fn into_direction(self) -> Direction {
+        match self {
+            ButtonAction::Press => Direction::Press,
+            ButtonAction::Release => Direction::Release,
+        }
     }
 }
 

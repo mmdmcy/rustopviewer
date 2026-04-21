@@ -156,7 +156,7 @@ async fn pair(
         .issue_pairing_session(&request.code, user_agent)
         .map_err(pairing_error_response)?;
     state
-        .enable_remote_control_for_paired_phone()
+        .enable_remote_control_for_paired_client()
         .map_err(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -291,7 +291,7 @@ fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                "The remote session is missing or expired. Pair this phone again.".to_string(),
+                "The remote session is missing or expired. Pair this browser again.".to_string(),
             )
         })?;
 
@@ -305,7 +305,7 @@ fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
         .ok_or_else(|| {
             (
                 StatusCode::UNAUTHORIZED,
-                "The remote session is missing or expired. Pair this phone again.".to_string(),
+                "The remote session is missing or expired. Pair this browser again.".to_string(),
             )
         })
 }
@@ -314,7 +314,7 @@ fn session_error_response(error: SessionAuthError) -> (StatusCode, String) {
     match error {
         SessionAuthError::Missing | SessionAuthError::Invalid | SessionAuthError::Expired => (
             StatusCode::UNAUTHORIZED,
-            "The remote session is missing or expired. Pair this phone again.".to_string(),
+            "The remote session is missing or expired. Pair this browser again.".to_string(),
         ),
         SessionAuthError::RateLimited => (
             StatusCode::TOO_MANY_REQUESTS,

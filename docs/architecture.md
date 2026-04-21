@@ -2,10 +2,10 @@
 
 rustopviewer currently has four main layers:
 
-## Native desktop app
+## Host runtime and TUI
 
-- `src/main.rs` starts the app, initializes DPI awareness, loads config, and launches the desktop UI plus background workers.
-- `src/app.rs` renders the local control window where users choose monitors and connection URLs.
+- `src/main.rs` starts the app, initializes platform-specific process state, loads config, and launches the host TUI plus background workers.
+- `src/tui.rs` renders the local terminal control surface where users choose monitors, inspect access paths, and manage pairing/session state.
 
 ## Capture and state
 
@@ -15,12 +15,12 @@ rustopviewer currently has four main layers:
 
 ## Remote control server
 
-- `src/server.rs` serves the mobile web UI and the authenticated API endpoints.
-- `assets/remote.html` contains the current iPhone-oriented browser client.
+- `src/server.rs` serves the browser UI and the authenticated API endpoints.
+- `assets/remote.html` contains the current desktop/mobile browser client.
 
 ## Input injection
 
-- `src/input.rs` translates API requests into Windows mouse and keyboard events.
+- `src/input.rs` translates API requests into cross-platform mouse and keyboard events.
 
 ## Design Principles
 

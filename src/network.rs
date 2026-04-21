@@ -97,7 +97,7 @@ pub fn discover_urls(port: u16) -> UrlSet {
             url: format!("http://{ip}:{port}/"),
         });
     let tailscale_serve_http = serve_snapshot.http_url.map(|url| ConnectionUrl {
-        label: "Tailscale phone URL".to_string(),
+        label: "Tailscale Serve URL".to_string(),
         url: append_trailing_slash(url),
     });
 
@@ -126,7 +126,7 @@ pub fn discover_urls(port: u16) -> UrlSet {
     }
 }
 
-pub fn enable_tailscale_phone_url(port: u16) -> Result<()> {
+pub fn enable_tailscale_client_url(port: u16) -> Result<()> {
     let port_text = port.to_string();
     let target = format!("127.0.0.1:{port}");
     run_tailscale_command(&["serve", "--bg", "--yes", "--http", &port_text, &target]).map(|_| ())

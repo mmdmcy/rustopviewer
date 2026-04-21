@@ -141,7 +141,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn enable_remote_control_for_paired_phone(&self) -> Result<()> {
+    pub fn enable_remote_control_for_paired_client(&self) -> Result<()> {
         if self.is_elevated {
             return Ok(());
         }
@@ -275,7 +275,7 @@ impl AppState {
     pub fn ensure_remote_command_allowed(&self, command: &InputCommand) -> Result<()> {
         if self.is_elevated {
             return Err(anyhow!(
-                "remote input is locked because the Windows app is running as Administrator"
+                "remote input is locked because the host runtime is running with elevated privileges"
             ));
         }
 
@@ -287,9 +287,7 @@ impl AppState {
                 if self.remote_pointer_enabled() {
                     Ok(())
                 } else {
-                    Err(anyhow!(
-                        "remote pointer control is disabled on the Windows app"
-                    ))
+                    Err(anyhow!("remote pointer control is disabled on the host"))
                 }
             }
             InputCommand::Text { .. }
@@ -299,7 +297,7 @@ impl AppState {
                     Ok(())
                 } else {
                     Err(anyhow!(
-                        "remote keyboard, text, and shortcut input is disabled on the Windows app"
+                        "remote keyboard, text, and shortcut input is disabled on the host"
                     ))
                 }
             }

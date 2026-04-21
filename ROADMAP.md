@@ -3,8 +3,8 @@
 ## Near-Term
 
 - Improve tap precision and optional calibration for scaled displays.
-- Add pinch-to-zoom and smoother viewport navigation on iPhone.
-- Add a system tray mode and startup behavior on Windows.
+- Add smoother viewport navigation and gesture tuning across touch and desktop browsers.
+- Add a system tray mode and startup behavior on Linux and Windows.
 - Improve stream responsiveness and bandwidth efficiency.
 
 ## Mid-Term
@@ -17,5 +17,5 @@
 ## Long-Term
 
 - Support unattended access workflows with stronger operational safeguards.
-- Add additional client surfaces beyond Safari.
+- Add additional client surfaces beyond the built-in browser UI.
 - Evolve ROV into a robust remote access platform with clear extension points.

@@ -544,12 +544,12 @@
 
       <div class="overlay" id="frameOverlay">
         <div class="overlay-card">
-          <strong id="overlayTitle">Waiting for the laptop</strong>
-          <span id="overlayMessage">Open the newest phone URL from the Windows app if this does not clear on its own.</span>
+          <strong id="overlayTitle">Waiting for the host</strong>
+          <span id="overlayMessage">Open the newest browser URL from the host TUI if this does not clear on its own.</span>
           <div class="pairing-panel" id="pairingPanel" hidden>
             <input class="pair-code-input" id="pairCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Pairing code">
-            <button class="action" id="pairButton">Pair This Phone</button>
-            <div class="pair-hint" id="pairHint">Generate a fresh one-time pairing code on the Windows app.</div>
+            <button class="action" id="pairButton">Pair Browser</button>
+            <div class="pair-hint" id="pairHint">Generate a fresh one-time pairing code in the host TUI.</div>
           </div>
         </div>
       </div>
@@ -695,6 +695,10 @@
       idleFrameIntervalMs: DEFAULT_IDLE_FRAME_INTERVAL_MS,
       interactionBoostWindowMs: DEFAULT_INTERACTION_BOOST_MS
     };
+    const APP_BASE_URL = new URL(
+      window.location.pathname.endsWith("/") ? window.location.pathname : `${window.location.pathname}/`,
+      window.location.origin
+    );
 
     const body = document.body;
     const frameSurface = document.getElementById("frameSurface");
@@ -745,6 +749,10 @@
 
     boot();
 
+    function apiUrl(path) {
+      return new URL(path.replace(/^\/+/, ""), APP_BASE_URL).toString();
+    }
+
     function boot() {
       bindControls();
       syncUiState();
@@ -764,7 +772,7 @@
       frameImage.addEventListener("error", () => {
         state.frameReady = false;
         if (!state.frameObjectUrl) {
-          showOverlay("Image error", "Safari could not decode the latest frame.");
+          showOverlay("Image error", "The browser could not decode the latest frame.");
         }
       });
 
@@ -991,6 +999,9 @@
       window.addEventListener("pointermove", onPointerMove);
       window.addEventListener("pointerup", onPointerUp);
       window.addEventListener("pointercancel", onPointerCancel);
+      frameSurface.addEventListener("wheel", onWheel, { passive: false });
+      frameSurface.addEventListener("contextmenu", onContextMenu);
+      frameSurface.addEventListener("auxclick", onAuxClick);
       frameSurface.addEventListener("touchstart", onTouchStart, { passive: false });
       frameSurface.addEventListener("touchmove", onTouchMove, { passive: false });
       frameSurface.addEventListener("touchend", onTouchEnd, { passive: false });
@@ -1144,7 +1155,7 @@
 
     async function refreshStatus() {
       try {
-        const response = await fetch("/api/status", {
+        const response = await fetch(apiUrl("api/status"), {
           cache: "no-store",
           credentials: "same-origin"
         });
@@ -1153,8 +1164,8 @@
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
-          setConnectionState("Pairing required", "Enter the one-time code from Windows", "warn");
-          showPairing("Pair this phone", "Enter the one-time pairing code shown on the Windows app.");
+          setConnectionState("Pairing required", "Enter the one-time code from the host TUI", "warn");
+          showPairing("Pair this browser", "Enter the one-time pairing code shown in the host TUI.");
           return;
         }
 
@@ -1196,11 +1207,11 @@
           const modeLabel = controlReady
             ? "Control scopes approved"
             : payload.host_elevated
-              ? "View only - Windows app is elevated"
-              : "View only - enable control on the Windows app";
+              ? "View only - host runtime is elevated"
+              : "View only - enable control in the host TUI";
           setConnectionState("Connected", modeLabel, controlReady ? "ok" : "warn");
           if (!payload.has_frame && !state.frameReady) {
-            showOverlay("Waiting for frame", "The laptop is connected but has not delivered the first frame yet.");
+            showOverlay("Waiting for frame", "The host is connected but has not delivered the first frame yet.");
           } else if (state.frameReady) {
             hideOverlay();
           }
@@ -1225,7 +1236,7 @@
           headers["If-None-Match"] = state.lastFrameEtag;
         }
 
-        const response = await fetch("/api/frame.jpg", {
+        const response = await fetch(apiUrl("api/frame.jpg"), {
           cache: "no-store",
           credentials: "same-origin",
           headers
@@ -1235,7 +1246,7 @@
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
-          showPairing("Pair this phone", "Your remote session expired. Enter a fresh pairing code from Windows.");
+          showPairing("Pair this browser", "Your remote session expired. Enter a fresh pairing code from the host TUI.");
           return;
         }
 
@@ -1374,7 +1385,7 @@
       const reportFailure = !!options.reportFailure;
       markRecentInteraction();
       try {
-        const response = await fetch("/api/input", {
+        const response = await fetch(apiUrl("api/input"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -1384,20 +1395,20 @@
         });
 
         if (response.status === 401) {
-          showPairing("Pair this phone", "Your remote session expired. Enter a fresh pairing code from Windows.");
+          showPairing("Pair this browser", "Your remote session expired. Enter a fresh pairing code from the host TUI.");
           return {
             ok: false,
             status: response.status,
-            message: "Your remote session expired. Pair this phone again."
+            message: "Your remote session expired. Pair this browser again."
           };
         }
 
         if (response.status === 403) {
-          setConnectionState("View only", "Remote input is disabled on the Windows app", "warn");
+          setConnectionState("View only", "Remote input is disabled on the host", "warn");
           return {
             ok: false,
             status: response.status,
-            message: "Remote input is disabled on the Windows app."
+            message: "Remote input is disabled on the host."
           };
         }
 
@@ -1426,7 +1437,7 @@
         const message =
           error && typeof error.message === "string" && error.message.trim()
             ? error.message.trim()
-            : "Failed to reach the Windows app.";
+            : "Failed to reach the host.";
 
         if (reportFailure) {
           setConnectionState("Offline", message, "error");
@@ -1699,6 +1710,46 @@
       endTouchGesture();
     }
 
+    function onWheel(event) {
+      if (!state.frameReady || !state.pointerEnabled || !isScreenPointerTarget(event.target)) {
+        return;
+      }
+
+      const horizontal = wheelDeltaToSteps(event.deltaX);
+      const vertical = wheelDeltaToSteps(event.deltaY);
+      if (!horizontal && !vertical) {
+        return;
+      }
+
+      event.preventDefault();
+      sendCommand({ type: "scroll", horizontal, vertical });
+    }
+
+    function onContextMenu(event) {
+      if (!state.frameReady || !state.pointerEnabled || !isScreenPointerTarget(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      const point = pointFromEvent(event);
+      sendCommand({ type: "click", x: point.x, y: point.y, button: "right", count: 1 });
+    }
+
+    function onAuxClick(event) {
+      if (
+        event.button !== 1 ||
+        !state.frameReady ||
+        !state.pointerEnabled ||
+        !isScreenPointerTarget(event.target)
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      const point = pointFromEvent(event);
+      sendCommand({ type: "click", x: point.x, y: point.y, button: "middle", count: 1 });
+    }
+
     function onPointerCancel(event) {
       if (!state.pointer || state.pointer.pointerId !== event.pointerId) {
         return;
@@ -1719,6 +1770,15 @@
 
     function pointFromTouch(touch) {
       return pointFromClient(touch.clientX, touch.clientY);
+    }
+
+    function wheelDeltaToSteps(delta) {
+      if (!Number.isFinite(delta) || delta === 0) {
+        return 0;
+      }
+
+      const magnitude = Math.max(1, Math.round(Math.abs(delta) / 48));
+      return delta > 0 ? magnitude : -magnitude;
     }
 
     function pointFromClient(clientX, clientY) {
@@ -2047,7 +2107,7 @@
     function showPairing(title, message, hint) {
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
-      pairHint.textContent = hint || "Generate a fresh one-time pairing code on the Windows app.";
+      pairHint.textContent = hint || "Generate a fresh one-time pairing code in the host TUI.";
       pairingPanel.hidden = false;
       frameOverlay.classList.remove("hidden");
     }
@@ -2059,7 +2119,7 @@
 
       const code = pairCodeInput.value.trim();
       if (!code) {
-        showPairing("Pair this phone", "Enter the one-time pairing code shown on the Windows app.", "Pairing requires the current one-time code from Windows.");
+        showPairing("Pair this browser", "Enter the one-time pairing code shown in the host TUI.", "Pairing requires the current one-time code from the host TUI.");
         pairCodeInput.focus();
         return;
       }
@@ -2067,10 +2127,10 @@
       state.pairingBusy = true;
       pairButton.disabled = true;
       pairButton.textContent = "Pairing...";
-      pairHint.textContent = "Checking the one-time code with the Windows app...";
+      pairHint.textContent = "Checking the one-time code with the host...";
 
       try {
-        const response = await fetch("/api/pair", {
+        const response = await fetch(apiUrl("api/pair"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
@@ -2081,7 +2141,7 @@
 
         if (response.ok) {
           pairCodeInput.value = "";
-          pairHint.textContent = "Phone paired. Loading the live desktop...";
+          pairHint.textContent = "Browser paired. Loading the live desktop...";
           await refreshStatus();
           markRecentInteraction();
           scheduleNextFrame(0);
@@ -2090,20 +2150,20 @@
 
         const message = await response.text();
         showPairing(
-          "Pair this phone",
-          "The Windows app did not accept that pairing attempt.",
-          message || "Generate a fresh one-time pairing code on the Windows app."
+          "Pair this browser",
+          "The host did not accept that pairing attempt.",
+          message || "Generate a fresh one-time pairing code in the host TUI."
         );
       } catch (error) {
         showPairing(
-          "Pair this phone",
-          "Pairing could not reach the Windows app.",
-          error.message || "Check the phone URL and try again."
+          "Pair this browser",
+          "Pairing could not reach the host.",
+          error.message || "Check the browser URL and try again."
         );
       } finally {
         state.pairingBusy = false;
         pairButton.disabled = false;
-        pairButton.textContent = "Pair This Phone";
+        pairButton.textContent = "Pair Browser";
       }
     }
 
