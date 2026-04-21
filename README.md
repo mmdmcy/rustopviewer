@@ -1,21 +1,22 @@
 # rustopviewer
 
-RustOp Viewer, or **ROV**, is a Windows-first remote desktop viewer/controller written in Rust and optimized for controlling a Windows laptop from an iPhone over Tailscale, including when the phone is on mobile data or another Wi-Fi network.
+RustOp Viewer, or **ROV**, is a Rust remote desktop viewer/controller for Linux and Windows hosts with built-in browser clients for desktop and mobile use.
 
 ROV currently ships as:
 
-- A native Windows desktop app for the host machine
-- A built-in mobile web client served by the host itself
+- A cross-platform host TUI for Linux and Windows
+- A built-in browser client served by the host itself
 - A host-approved pairing flow that exchanges one-time codes for short-lived sessions
-- In-app readiness checks for off-LAN access over Tailscale
-- One-click Tailscale phone URL setup inside the tailnet, with optional HTTPS later if desired
+- Loopback-first network exposure with optional Tailscale URL discovery
+- Reverse-proxy-friendly browser paths for subpath or hostname-based publishing
+- In-terminal readiness checks for local and private-browser access paths
 
 ## Why ROV
 
 ROV exists to make a very specific workflow feel good:
 
-- Open your laptop from your iPhone
-- Reach it over Tailscale, even off-LAN
+- Open a host machine from a browser
+- Reach it through loopback, Tailscale, or a private reverse proxy/tunnel
 - See the desktop
 - Click, drag, scroll, type, and launch shortcuts quickly
 - Keep the stack small, understandable, and hackable in Rust
@@ -26,42 +27,43 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 
 ### Core goals
 
-- Reliable remote access from a phone to a Windows machine while on the go
-- Off-LAN access only through Tailscale
-- No direct public internet exposure and no non-Tailscale off-LAN mode
-- Support for Windows Home as well as higher Windows editions
+- Reliable remote access from desktop or mobile browsers to Linux and Windows hosts
+- Loopback-first deployment that works well with Tailscale or a reverse proxy/tunnel
+- No direct public internet exposure by default
 - Security-first defaults, with host-approved pairing and tight session handling
-- A mobile-first experience that remains usable on limited or flaky phone connectivity
+- A browser experience that remains usable on limited or flaky connectivity
 - Fast access to the live desktop with the inputs that matter most: pointer, scroll, text, and shortcuts
 
 ### Explicit non-goals for now
 
-- Replacing Windows Remote Desktop feature-for-feature
+- Replacing full desktop-sharing suites feature-for-feature
 - Audio streaming
 - Clipboard sync
 - File transfer
 - Enterprise desktop-management features
-- Chasing extra complexity when the current phone workflow already feels good enough
+- Chasing extra complexity when the focused browser workflow already feels good enough
 
 ### Operational boundaries
 
-- The Windows session is expected to be awake and unlocked
-- Tailscale is the network boundary for off-LAN use
-- The phone client is a focused control surface, not a general-purpose desktop protocol
+- The host session is expected to be awake and unlocked
+- Loopback is the default listener; Tailscale and reverse proxies are additive publishing paths
+- The browser client is a focused control surface, not a general-purpose desktop protocol
 - Security and safe remote use take priority over convenience when the two conflict
 
 ## Current Features
 
-- Native Windows desktop control window
+- Cross-platform host TUI for Linux and Windows
 - Monitor selection
-- Mobile Safari-oriented remote UI
+- Browser client that works on desktop and mobile browsers
 - Screen streaming from the selected monitor
-- Balanced, Data Saver, and Emergency stream profiles for mobile-friendly bandwidth use
+- Balanced, Data Saver, and Emergency stream profiles for browser-friendly bandwidth use
 - Mouse move, click, drag, and wheel input
+- Desktop-browser wheel, right-click, and middle-click support
 - Keyboard shortcuts and plain-text input
-- Local button and two-finger view zoom with panning on iPhone
+- Touch zoom and panning on mobile browsers
 - Pair-approved control that automatically restores pointer and keyboard unless the host is elevated, with host-side toggles for view-only when desired
-- Loopback plus Tailscale-tailnet host listeners, with Tailscale Serve HTTP as the preferred phone path and HTTPS remaining optional
+- Loopback plus optional Tailscale-tailnet host listeners
+- Relative browser API paths so the client can sit behind a stripped reverse-proxy prefix
 
 ## Current Limitations
 
@@ -69,13 +71,12 @@ ROV is still early-stage software.
 
 Notable current limitations:
 
-- Windows only for the host
-- The Windows session must already be awake and unlocked
-- Remote input is intentionally locked out while ROV runs as Administrator
+- Linux builds currently depend on desktop capture libraries provided by the host OS
+- The host session must already be awake and unlocked
+- Remote input is intentionally locked out while ROV runs elevated
 - No audio streaming
 - No clipboard sync
 - No file transfer
-- No native iOS app yet
 - No WebRTC transport yet
 - `Ctrl+Alt+Del` is intentionally out of scope for a normal user-space app
 
@@ -83,58 +84,75 @@ Notable current limitations:
 
 ### Requirements
 
-- Windows host
+- Linux or Windows host
 - Rust toolchain
-- iPhone with Safari
-- Tailscale on both devices if you want reliable off-LAN access
+- A modern desktop or mobile browser
+- Tailscale only if you want private tailnet URLs
+
+### Linux build dependencies
+
+On Ubuntu or Linux Mint, install:
+
+```bash
+sudo apt install pkg-config libpipewire-0.3-dev libgbm-dev libclang-dev clang
+```
+
+Depending on the desktop session and distro, additional capture-related packages may still be required.
 
 ### Run locally
 
-```powershell
+```bash
 cargo run --release
 ```
 
 On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
 
-### Use it from iPhone
+### Use it from a browser
 
-1. Start Tailscale on the laptop and on the iPhone.
-2. Launch ROV on the laptop.
-3. Click **Enable Phone URL** if the phone URL is not ready yet.
-4. Copy the "Phone URL" shown in the desktop app.
-5. Open that URL on the iPhone while both devices are connected to the same tailnet.
-6. If you later want a browser-trusted HTTPS URL, set that up separately.
-7. Generate a one-time pairing code on the Windows app and enter it on the phone.
-8. Use the remote page to control the desktop. If you want view-only later, turn either input scope off in the Windows app.
+1. Launch ROV on the host machine.
+2. Open the best available URL shown in the host TUI.
+3. If you want a private tailnet URL, start Tailscale and use **Enable Tailscale URL**.
+4. If you want a reverse-proxy or tunnel deployment, publish the loopback listener instead of opening a normal LAN listener.
+5. Generate a one-time pairing code in the host TUI and enter it in the browser page.
+6. Use the remote page to control the desktop. If you want view-only later, turn either input scope off in the host TUI.
 
-### Preferred: Tailscale phone URL
+### Optional: Tailscale private URL
 
-ROV keeps its remote-control server off the normal LAN and can publish it to the phone in two ways:
+ROV keeps its remote-control server on local loopback and can additionally publish it to private Tailscale clients in two ways:
 
 - Through Tailscale Serve HTTP inside the tailnet
 - Directly on the device's Tailscale tailnet address
 - Through optional Tailscale Serve HTTPS if you want a browser-trusted URL later
 
-This means the Rust app itself does not open a normal LAN-facing remote-control socket and still avoids public internet exposure by default.
+This means the Rust app itself does not need to open a normal LAN-facing remote-control socket and still avoids direct public internet exposure by default.
 
-You can now do this from inside the Windows app with the **Enable Phone URL** button.
+You can do this from inside the host TUI with the **Enable Tailscale URL** action.
 
-1. In the Windows app, click **Enable Phone URL**.
+1. In the host TUI, select **Enable Tailscale URL** and press `Enter`.
 
-If you prefer to do it manually on the Windows host, run:
+If you prefer to do it manually on the host, run:
 
-```powershell
+```bash
 tailscale serve --bg --yes --http 45080 127.0.0.1:45080
 ```
 
 2. Tailscale will print an `http://...ts.net:45080` URL for this machine.
-3. Open that URL on the iPhone while both devices are on the same tailnet.
+3. Open that URL from any browser that is on the same tailnet.
 
-This is the preferred phone path because it keeps traffic inside the encrypted Tailscale boundary and avoids extra Windows Firewall friction on the app process itself.
+This is the preferred private-path option because it keeps traffic inside the encrypted Tailscale boundary and proxies cleanly back to loopback.
 
 ### Optional: browser-trusted HTTPS later
 
 If you eventually want a browser-trusted HTTPS URL, Tailscale HTTPS certificates still need to be enabled for the tailnet first.
+
+### Reverse proxy or tunnel deployment
+
+ROV is designed to be published from loopback through infrastructure you already trust.
+
+- Keep the host TUI runtime listening on `127.0.0.1`.
+- Proxy a hostname or subpath back to that loopback listener.
+- Preserve cookies and same-origin requests.
+- If you mount ROV under a stripped path prefix, the built-in browser client now uses relative API paths so it can still reach `api/*` correctly.
 
 ## Repository Standards
 
@@ -156,7 +174,7 @@ See:
 
 Recommended local validation:
 
-```powershell
+```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -164,21 +182,21 @@ cargo test --all-targets --all-features
 
 ## Security Model
 
-- The host app listens on loopback and the current Tailscale tailnet IPs, not on the normal LAN or public internet.
-- Opening the phone page is not enough to gain control. A new phone session must be paired with a one-time code generated on the Windows app.
-- Approved phone sessions are cookie-based, single-device, host-revocable, and now stay paired for up to 24 hours without an idle timeout.
-- A successful phone pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
-- Running ROV as Administrator forces remote input back to view-only.
-- Tailscale remains the supported network boundary for off-LAN use; no-Tailscale off-LAN exposure is intentionally out of scope.
+- The host runtime listens on loopback and, when available, the current Tailscale tailnet IPs, not on the normal LAN by default.
+- Opening the browser page is not enough to gain control. A new browser session must be paired with a one-time code generated in the host TUI.
+- Approved sessions are cookie-based, single-device, host-revocable, and stay paired for up to 24 hours without an idle timeout.
+- A successful pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
+- Running ROV elevated forces remote input back to view-only.
+- Reverse proxies and tunnels should target loopback rather than widening the app's own bind surface.
 
 ## Roadmap Highlights
 
 - Better precision and calibration for scaled displays
-- Better gesture calibration for Safari and scaled displays
+- Better gesture calibration across touch and desktop browsers
 - Lower-latency streaming transport
 - Clipboard sync
 - File transfer
-- Tray mode and startup behavior
+- Tray mode and startup behavior across Linux and Windows
 
 ## License
 

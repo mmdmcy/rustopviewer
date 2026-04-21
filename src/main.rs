@@ -1,7 +1,3 @@
-#[cfg(not(target_os = "windows"))]
-compile_error!("RustOp Viewer currently targets Windows only.");
-
-mod app;
 mod capture;
 mod config;
 mod input;
@@ -11,19 +7,15 @@ mod platform;
 mod security;
 mod server;
 mod state;
+mod tui;
 
 use anyhow::{Context, Result};
-use eframe::egui;
 use state::AppState;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
     init_logging();
-
-    if let Err(err) = enigo::set_dpi_awareness() {
-        tracing::warn!(?err, "Failed to set process DPI awareness");
-    }
 
     let config_store = config::ConfigStore::new()?;
     let config = config_store.load_or_create()?;
@@ -45,26 +37,14 @@ fn main() -> Result<()> {
     capture::spawn_capture_worker(state.clone());
     server::spawn_server(state.clone());
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 820.0])
-            .with_min_inner_size([760.0, 520.0]),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "RustOp Viewer",
-        native_options,
-        Box::new(move |cc| Ok(Box::new(app::RustOpViewerApp::new(cc, state.clone())))),
-    )
-    .context("failed to run RustOp Viewer")?;
+    tui::run(state).context("failed to run the RustOp Viewer terminal UI")?;
 
     Ok(())
 }
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,wgpu=warn,eframe=warn,hyper=warn"));
+        .unwrap_or_else(|_| EnvFilter::new("info,wgpu=warn,hyper=warn"));
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
