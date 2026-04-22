@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::{ConnectInfo, DefaultBodyLimit, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     env,
@@ -61,6 +61,7 @@ pub fn spawn_server(state: Arc<AppState>) {
 async fn run_server(state: Arc<AppState>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/api/admin/pair-code", post(admin_pair_code))
         .route("/api/pair", post(pair))
         .route("/api/session/restore", post(restore_session))
         .route("/api/status", get(status))
@@ -145,6 +146,37 @@ async fn index() -> Response {
     );
     apply_security_headers(headers, true);
     response
+}
+
+#[derive(Serialize)]
+struct PairCodeResponse {
+    code: String,
+    expires_in_seconds: u64,
+    remaining_attempts: u8,
+}
+
+async fn admin_pair_code(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_loopback_admin(remote_addr)?;
+    let snapshot = state.generate_pair_code();
+    tracing::info!(
+        remote_addr = %remote_addr,
+        code = %snapshot.code,
+        expires_in_seconds = snapshot.expires_in.as_secs(),
+        remaining_attempts = snapshot.remaining_attempts,
+        "Host-approved one-time pairing code generated"
+    );
+
+    let mut response = Json(PairCodeResponse {
+        code: snapshot.code,
+        expires_in_seconds: snapshot.expires_in.as_secs(),
+        remaining_attempts: snapshot.remaining_attempts,
+    })
+    .into_response();
+    apply_security_headers(response.headers_mut(), false);
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -339,6 +371,14 @@ fn authorize_input_session(headers: &HeaderMap, state: &AppState) -> ApiResult<(
         .authorize_input_session(&session_id)
         .map(|_| ())
         .map_err(session_error_response)
+}
+
+fn ensure_loopback_admin(remote_addr: SocketAddr) -> ApiResult<()> {
+    if remote_addr.ip().is_loopback() {
+        Ok(())
+    } else {
+        Err((StatusCode::NOT_FOUND, "not found".to_string()))
+    }
 }
 
 fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
@@ -540,9 +580,12 @@ fn spawn_listener(
             }
         }
 
-        let result = axum::serve(listener, app)
-            .await
-            .context("failed while serving remote control requests");
+        let result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .context("failed while serving remote control requests");
         (kind, result)
     });
 }
@@ -643,8 +686,9 @@ fn tailscale_port_is_in_use(err: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::tailscale_port_is_in_use;
+    use super::{ensure_loopback_admin, tailscale_port_is_in_use};
     use std::io::{Error, ErrorKind};
+    use std::net::{Ipv4Addr, SocketAddr};
 
     #[test]
     fn tailscale_port_conflict_is_treated_as_non_fatal() {
@@ -656,5 +700,14 @@ mod tests {
     fn unrelated_listener_errors_are_not_suppressed() {
         let err = Error::from(ErrorKind::PermissionDenied);
         assert!(!tailscale_port_is_in_use(&err));
+    }
+
+    #[test]
+    fn local_admin_routes_only_allow_loopback_clients() {
+        let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 45080));
+        let remote = SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 45080));
+
+        assert!(ensure_loopback_admin(loopback).is_ok());
+        assert!(ensure_loopback_admin(remote).is_err());
     }
 }
