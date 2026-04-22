@@ -21,6 +21,9 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - A `--print-pair-code` startup option for issuing one host-approved pairing code while running headless.
 - A `--generate-pair-code` command for asking the running local host to mint a fresh code without a restart.
 - Support for `ROV_EXTRA_LISTEN_ADDRS` so trusted local reverse proxies can reach the host runtime without widening to a normal LAN bind.
+- Form-post browser approval plus explicit approval failure states for cleaner first-pair recovery.
+- Browser-bound session and remembered-browser token headers for reverse-proxy deployments where background cookie handling is unreliable.
+- Desktop-browser physical keyboard capture, broader special-key coverage, and mobile-only tool chrome.
 
 ### Changed
 
@@ -30,3 +33,5 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Updated the browser client to use relative API paths so it can sit behind a stripped reverse-proxy prefix.
 - Added host-side trust revocation and browser-side remembered-device session restoration.
 - Stopped the browser client from polling frame and status endpoints while it is still waiting for approval, which makes first-pair flows quieter and more reliable.
+- Switched the browser viewer to fit-to-window scaling first, with manual zoom layered on top.
+- Added `Shift+wheel` horizontal-scroll fallback for desktop browsers.

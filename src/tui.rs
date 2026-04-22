@@ -173,11 +173,7 @@ impl HostTui {
             KeyCode::Down => self.shift_selection(1),
             KeyCode::Left => self.adjust_selected(-1)?,
             KeyCode::Right => self.adjust_selected(1)?,
-            KeyCode::Enter => {
-                if self.activate_selected()? {
-                    return Ok(true);
-                }
-            }
+            KeyCode::Enter if self.activate_selected()? => return Ok(true),
             KeyCode::Esc | KeyCode::Char('q') => return Ok(true),
             _ => {}
         }

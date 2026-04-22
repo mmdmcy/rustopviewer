@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 anyhow = "1.0.100"
-axum = { version = "0.8.8", features = ["json"] }
+axum = { version = "0.8.8", features = ["form", "json"] }
 crossterm = "0.28.1"
 directories = "6.0.0"
 enigo = "0.6.1"

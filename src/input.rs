@@ -136,18 +136,78 @@ pub enum RemoteKey {
     Meta,
     #[serde(rename = "a")]
     A,
+    #[serde(rename = "b")]
+    B,
     #[serde(rename = "c")]
     C,
     #[serde(rename = "d")]
     D,
+    #[serde(rename = "e")]
+    E,
+    #[serde(rename = "f")]
+    F,
+    #[serde(rename = "g")]
+    G,
+    #[serde(rename = "h")]
+    H,
+    #[serde(rename = "i")]
+    I,
+    #[serde(rename = "j")]
+    J,
+    #[serde(rename = "k")]
+    K,
     #[serde(rename = "l")]
     L,
+    #[serde(rename = "m")]
+    M,
+    #[serde(rename = "n")]
+    N,
+    #[serde(rename = "o")]
+    O,
+    #[serde(rename = "p")]
+    P,
+    #[serde(rename = "q")]
+    Q,
     #[serde(rename = "r")]
     R,
+    #[serde(rename = "s")]
+    S,
+    #[serde(rename = "t")]
+    T,
+    #[serde(rename = "u")]
+    U,
     #[serde(rename = "v")]
     V,
+    #[serde(rename = "w")]
+    W,
     #[serde(rename = "x")]
     X,
+    #[serde(rename = "y")]
+    Y,
+    #[serde(rename = "z")]
+    Z,
+    #[serde(rename = "f1")]
+    F1,
+    #[serde(rename = "f2")]
+    F2,
+    #[serde(rename = "f3")]
+    F3,
+    #[serde(rename = "f5")]
+    F5,
+    #[serde(rename = "f6")]
+    F6,
+    #[serde(rename = "f7")]
+    F7,
+    #[serde(rename = "f8")]
+    F8,
+    #[serde(rename = "f9")]
+    F9,
+    #[serde(rename = "f10")]
+    F10,
+    #[serde(rename = "f11")]
+    F11,
+    #[serde(rename = "f12")]
+    F12,
     #[serde(rename = "f4")]
     F4,
 }
@@ -398,13 +458,43 @@ fn to_enigo_key(key: RemoteKey) -> Key {
         RemoteKey::Alt => Key::Alt,
         RemoteKey::Meta => Key::Meta,
         RemoteKey::A => Key::Unicode('a'),
+        RemoteKey::B => Key::Unicode('b'),
         RemoteKey::C => Key::Unicode('c'),
         RemoteKey::D => Key::Unicode('d'),
+        RemoteKey::E => Key::Unicode('e'),
+        RemoteKey::F => Key::Unicode('f'),
+        RemoteKey::G => Key::Unicode('g'),
+        RemoteKey::H => Key::Unicode('h'),
+        RemoteKey::I => Key::Unicode('i'),
+        RemoteKey::J => Key::Unicode('j'),
+        RemoteKey::K => Key::Unicode('k'),
         RemoteKey::L => Key::Unicode('l'),
+        RemoteKey::M => Key::Unicode('m'),
+        RemoteKey::N => Key::Unicode('n'),
+        RemoteKey::O => Key::Unicode('o'),
+        RemoteKey::P => Key::Unicode('p'),
+        RemoteKey::Q => Key::Unicode('q'),
         RemoteKey::R => Key::Unicode('r'),
+        RemoteKey::S => Key::Unicode('s'),
+        RemoteKey::T => Key::Unicode('t'),
+        RemoteKey::U => Key::Unicode('u'),
         RemoteKey::V => Key::Unicode('v'),
+        RemoteKey::W => Key::Unicode('w'),
         RemoteKey::X => Key::Unicode('x'),
+        RemoteKey::Y => Key::Unicode('y'),
+        RemoteKey::Z => Key::Unicode('z'),
+        RemoteKey::F1 => Key::F1,
+        RemoteKey::F2 => Key::F2,
+        RemoteKey::F3 => Key::F3,
         RemoteKey::F4 => Key::F4,
+        RemoteKey::F5 => Key::F5,
+        RemoteKey::F6 => Key::F6,
+        RemoteKey::F7 => Key::F7,
+        RemoteKey::F8 => Key::F8,
+        RemoteKey::F9 => Key::F9,
+        RemoteKey::F10 => Key::F10,
+        RemoteKey::F11 => Key::F11,
+        RemoteKey::F12 => Key::F12,
     }
 }
 

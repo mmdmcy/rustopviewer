@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
 use axum::{
-    Json, Router,
+    Form, Json, Router,
     body::Body,
     extract::{ConnectInfo, DefaultBodyLimit, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
             CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH,
-            InvalidHeaderValue, PRAGMA, REFERRER_POLICY, SET_COOKIE, USER_AGENT,
+            InvalidHeaderValue, LOCATION, PRAGMA, REFERRER_POLICY, SET_COOKIE, USER_AGENT,
         },
     },
     response::{IntoResponse, Response},
@@ -30,7 +30,8 @@ use crate::{
     network,
     security::{
         IssuePairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME, SessionAuthError,
-        TRUSTED_BROWSER_COOKIE_NAME, TRUSTED_BROWSER_MAX_LIFETIME, TrustedBrowserAuthError,
+        SessionGrant, TRUSTED_BROWSER_COOKIE_NAME, TRUSTED_BROWSER_MAX_LIFETIME,
+        TrustedBrowserAuthError,
     },
     state::AppState,
 };
@@ -38,6 +39,8 @@ use crate::{
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 const INDEX_HTML: &str = include_str!("../assets/remote.html");
+const SESSION_HEADER_NAME: &str = "x-rov-session";
+const TRUSTED_BROWSER_HEADER_NAME: &str = "x-rov-trusted";
 
 pub fn spawn_server(state: Arc<AppState>) {
     thread::spawn(move || {
@@ -63,6 +66,7 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
         .route("/", get(index))
         .route("/api/admin/pair-code", post(admin_pair_code))
         .route("/api/pair", post(pair))
+        .route("/pair/browser", post(pair_browser))
         .route("/api/session/restore", post(restore_session))
         .route("/api/status", get(status))
         .route("/api/frame.jpg", get(frame))
@@ -186,6 +190,12 @@ struct PairRequest {
     remember_browser: bool,
 }
 
+#[derive(Deserialize)]
+struct PairBrowserFormRequest {
+    code: String,
+    remember_browser: Option<String>,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -218,6 +228,11 @@ async fn pair(
             return Err(pairing_error_response(error));
         }
     };
+    tracing::info!(
+        remember_browser = request.remember_browser,
+        user_agent = user_agent.as_deref().unwrap_or("unknown"),
+        "Browser approved successfully"
+    );
     state
         .enable_remote_control_for_paired_client()
         .map_err(|_| {
@@ -229,25 +244,62 @@ async fn pair(
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     let secure_cookie = request_is_https(&headers);
-    let cookie_value = session_cookie_header(&grant.session_id, secure_cookie).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to create the session cookie".to_string(),
-        )
-    })?;
-    response.headers_mut().insert(SET_COOKIE, cookie_value);
-    if let Some(trusted_browser_token) = grant.trusted_browser_token.as_deref() {
-        let cookie_value = trusted_browser_cookie_header(trusted_browser_token, secure_cookie)
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "failed to create the trusted browser cookie".to_string(),
-                )
-            })?;
-        response.headers_mut().append(SET_COOKIE, cookie_value);
-    }
+    apply_session_cookies(response.headers_mut(), &grant, secure_cookie)?;
+    apply_token_headers(response.headers_mut(), &grant)?;
     apply_security_headers(response.headers_mut(), false);
     Ok(response)
+}
+
+async fn pair_browser(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(request): Form<PairBrowserFormRequest>,
+) -> Response {
+    let remember_browser = request.remember_browser.is_some();
+    let user_agent = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let grant =
+        match state.issue_pairing_session(&request.code, user_agent.clone(), remember_browser) {
+            Ok(grant) => grant,
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    remember_browser,
+                    user_agent = user_agent.as_deref().unwrap_or("unknown"),
+                    "Browser approval request failed"
+                );
+                return redirect_with_pair_error(pairing_error_code(&error));
+            }
+        };
+    tracing::info!(
+        remember_browser,
+        user_agent = user_agent.as_deref().unwrap_or("unknown"),
+        "Browser approved successfully"
+    );
+
+    if state.enable_remote_control_for_paired_client().is_err() {
+        return redirect_with_pair_error("server_error");
+    }
+
+    let mut response = Response::new(Body::from(pair_complete_html(&grant)));
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    let secure_cookie = request_is_https(&headers);
+    if apply_session_cookies(response.headers_mut(), &grant, secure_cookie).is_err() {
+        return redirect_with_pair_error("server_error");
+    }
+    if apply_token_headers(response.headers_mut(), &grant).is_err() {
+        return redirect_with_pair_error("server_error");
+    }
+    apply_security_headers(response.headers_mut(), true);
+    response
 }
 
 async fn restore_session(
@@ -268,13 +320,8 @@ async fn restore_session(
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     let secure_cookie = request_is_https(&headers);
-    let cookie_value = session_cookie_header(&grant.session_id, secure_cookie).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to create the session cookie".to_string(),
-        )
-    })?;
-    response.headers_mut().insert(SET_COOKIE, cookie_value);
+    apply_session_cookies(response.headers_mut(), &grant, secure_cookie)?;
+    apply_token_headers(response.headers_mut(), &grant)?;
     apply_security_headers(response.headers_mut(), false);
     Ok(response)
 }
@@ -395,21 +442,34 @@ fn ensure_loopback_admin(remote_addr: SocketAddr) -> ApiResult<()> {
 }
 
 fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
-    cookie_value(headers, SESSION_COOKIE_NAME).ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "The remote session is missing or expired. Pair this browser again.".to_string(),
-        )
-    })
+    token_value(headers, SESSION_HEADER_NAME)
+        .or_else(|| cookie_value(headers, SESSION_COOKIE_NAME))
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "The remote session is missing or expired. Pair this browser again.".to_string(),
+            )
+        })
 }
 
 fn trusted_browser_cookie(headers: &HeaderMap) -> ApiResult<String> {
-    cookie_value(headers, TRUSTED_BROWSER_COOKIE_NAME).ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            "This browser is not remembered on the host. Pair it again.".to_string(),
-        )
-    })
+    token_value(headers, TRUSTED_BROWSER_HEADER_NAME)
+        .or_else(|| cookie_value(headers, TRUSTED_BROWSER_COOKIE_NAME))
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "This browser is not remembered on the host. Pair it again.".to_string(),
+            )
+        })
+}
+
+fn token_value(headers: &HeaderMap, header_name: &str) -> Option<String> {
+    headers
+        .get(header_name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
@@ -462,6 +522,19 @@ fn pairing_error_response(error: IssuePairingError) -> (StatusCode, String) {
     }
 }
 
+fn pairing_error_code(error: &IssuePairingError) -> &'static str {
+    match error {
+        IssuePairingError::Pairing(error) => match error {
+            crate::security::PairingError::MissingCode => "missing_code",
+            crate::security::PairingError::NoActiveCode => "no_active_code",
+            crate::security::PairingError::InvalidCode => "invalid_code",
+            crate::security::PairingError::TooManyAttempts => "too_many_attempts",
+            crate::security::PairingError::CodeExpired => "code_expired",
+        },
+        IssuePairingError::Storage => "server_error",
+    }
+}
+
 fn trusted_browser_restore_error_response(error: TrustedBrowserAuthError) -> (StatusCode, String) {
     match error {
         TrustedBrowserAuthError::Missing | TrustedBrowserAuthError::Invalid => (
@@ -473,6 +546,99 @@ fn trusted_browser_restore_error_response(error: TrustedBrowserAuthError) -> (St
             "failed to refresh the remembered browser session".to_string(),
         ),
     }
+}
+
+fn redirect_with_pair_error(code: &str) -> Response {
+    let mut response = StatusCode::SEE_OTHER.into_response();
+    let location = format!("/?pair_error={code}");
+    if let Ok(value) = HeaderValue::from_str(&location) {
+        response.headers_mut().insert(LOCATION, value);
+    }
+    apply_security_headers(response.headers_mut(), false);
+    response
+}
+
+fn apply_session_cookies(
+    headers: &mut HeaderMap,
+    grant: &SessionGrant,
+    secure_cookie: bool,
+) -> ApiResult<()> {
+    let cookie_value = session_cookie_header(&grant.session_id, secure_cookie).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to create the session cookie".to_string(),
+        )
+    })?;
+    headers.insert(SET_COOKIE, cookie_value);
+    if let Some(trusted_browser_token) = grant.trusted_browser_token.as_deref() {
+        let cookie_value = trusted_browser_cookie_header(trusted_browser_token, secure_cookie)
+            .map_err(|_| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to create the trusted browser cookie".to_string(),
+                )
+            })?;
+        headers.append(SET_COOKIE, cookie_value);
+    }
+    Ok(())
+}
+
+fn apply_token_headers(headers: &mut HeaderMap, grant: &SessionGrant) -> ApiResult<()> {
+    let session = HeaderValue::from_str(&grant.session_id).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to attach the issued session token".to_string(),
+        )
+    })?;
+    headers.insert(SESSION_HEADER_NAME, session);
+
+    if let Some(trusted_browser_token) = grant.trusted_browser_token.as_deref() {
+        let trusted = HeaderValue::from_str(trusted_browser_token).map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to attach the trusted browser token".to_string(),
+            )
+        })?;
+        headers.insert(TRUSTED_BROWSER_HEADER_NAME, trusted);
+    }
+
+    Ok(())
+}
+
+fn pair_complete_html(grant: &SessionGrant) -> String {
+    let session_json =
+        serde_json::to_string(&grant.session_id).unwrap_or_else(|_| "\"\"".to_string());
+    let trusted_json =
+        serde_json::to_string(&grant.trusted_browser_token).unwrap_or_else(|_| "null".to_string());
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workspace Console</title>
+</head>
+<body>
+  <p>Finalizing workspace session...</p>
+  <script>
+    const sessionToken = {session_json};
+    const trustedToken = {trusted_json};
+    try {{
+      if (sessionToken) {{
+        window.localStorage.setItem("rov_session", sessionToken);
+      }}
+      if (trustedToken) {{
+        window.localStorage.setItem("rov_trusted", trustedToken);
+      }}
+    }} catch (error) {{
+      console.warn("Failed to persist workspace tokens", error);
+    }}
+    window.location.replace("/");
+  </script>
+</body>
+</html>
+"#
+    )
 }
 
 fn request_is_https(headers: &HeaderMap) -> bool {
