@@ -16,6 +16,7 @@ use axum::{
 use serde::Deserialize;
 use std::{
     collections::HashSet,
+    env,
     io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
@@ -81,6 +82,7 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
         ListenerKind::Loopback,
         app.clone(),
     );
+    bind_extra_ipv4_listeners(&mut servers, state.port(), app.clone()).await;
     refresh_tailscale_listeners(
         &mut servers,
         &mut active_tailnet_ips,
@@ -102,6 +104,12 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
                     }
                     Ok((ListenerKind::Loopback, Ok(()))) => {
                         return Err(anyhow::anyhow!("loopback listener exited unexpectedly"));
+                    }
+                    Ok((ListenerKind::Extra(ip), Err(err))) => {
+                        tracing::warn!(error = %err, ip = %ip, "Extra listener stopped");
+                    }
+                    Ok((ListenerKind::Extra(ip), Ok(()))) => {
+                        tracing::warn!(ip = %ip, "Extra listener exited");
                     }
                     Ok((ListenerKind::Tailscale(ip), Err(err))) => {
                         tracing::warn!(error = %err, ip = %ip, "Tailscale listener stopped");
@@ -502,6 +510,7 @@ fn request_etag_matches(headers: &HeaderMap, etag: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ListenerKind {
     Loopback,
+    Extra(Ipv4Addr),
     Tailscale(Ipv4Addr),
 }
 
@@ -517,6 +526,11 @@ fn spawn_listener(
             ListenerKind::Loopback => {
                 if let Some(address) = address {
                     tracing::info!("Remote control server listening on {address} (loopback)");
+                }
+            }
+            ListenerKind::Extra(ip) => {
+                if let Some(address) = address {
+                    tracing::info!("Remote control server listening on {address} (extra {ip})");
                 }
             }
             ListenerKind::Tailscale(ip) => {
@@ -570,6 +584,57 @@ async fn refresh_tailscale_listeners(
             }
         }
     }
+}
+
+async fn bind_extra_ipv4_listeners(
+    servers: &mut tokio::task::JoinSet<(ListenerKind, Result<()>)>,
+    port: u16,
+    app: Router,
+) {
+    for ip in configured_extra_listener_ips() {
+        let address = SocketAddr::new(IpAddr::V4(ip), port);
+        match TcpListener::bind(address).await {
+            Ok(listener) => {
+                spawn_listener(servers, listener, ListenerKind::Extra(ip), app.clone());
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    ip = %ip,
+                    "Failed to bind the configured extra listener"
+                );
+            }
+        }
+    }
+}
+
+fn configured_extra_listener_ips() -> Vec<Ipv4Addr> {
+    env::var("ROV_EXTRA_LISTEN_ADDRS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|entry| {
+                    let trimmed = entry.trim();
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+
+                    match trimmed.parse::<Ipv4Addr>() {
+                        Ok(ip) => Some(ip),
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                value = trimmed,
+                                "Ignoring invalid IPv4 address in ROV_EXTRA_LISTEN_ADDRS"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn tailscale_port_is_in_use(err: &std::io::Error) -> bool {

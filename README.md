@@ -56,6 +56,7 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Cross-platform host TUI for Linux and Windows
 - Optional `--headless` host runtime for unattended restart-safe deployments after the first approval
 - Optional `--print-pair-code` startup flow for one-time first pairing when you are running headless
+- Optional `ROV_EXTRA_LISTEN_ADDRS` support for trusted local reverse proxies that cannot reach loopback directly
 - Monitor selection
 - Browser client that works on desktop and mobile browsers
 - Screen streaming from the selected monitor
@@ -145,6 +146,17 @@ If you want ROV to stay available without a terminal window after you have alrea
 
 Headless mode is meant for already approved browsers. A brand-new browser still needs a host-generated one-time pairing code first.
 If you are deliberately launching headless for that first approval, start it with `--print-pair-code` so the host logs one code at startup.
+
+### Optional: extra local reverse-proxy listeners
+
+Some trusted local reverse proxies or containerized gateways cannot reach `127.0.0.1` on the host directly.
+For those cases, you can bind additional host-local IPv4 listeners with:
+
+```bash
+ROV_EXTRA_LISTEN_ADDRS=172.17.0.1,172.18.0.1 rustopviewer --headless
+```
+
+This is meant for host-local infrastructure you already control, such as a local Docker gateway or a private reverse proxy on the same machine.
 
 ### Optional: Tailscale private URL
 
