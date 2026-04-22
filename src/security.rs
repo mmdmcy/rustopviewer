@@ -12,7 +12,7 @@ pub const SESSION_COOKIE_NAME: &str = "rov_session";
 pub const TRUSTED_BROWSER_COOKIE_NAME: &str = "rov_trusted";
 pub const MAX_PAIR_ATTEMPTS: u8 = 5;
 pub const MAX_INPUTS_PER_SECOND: u16 = 90;
-pub const PAIR_CODE_TTL: Duration = Duration::from_secs(2 * 60);
+pub const PAIR_CODE_TTL: Duration = Duration::from_secs(10 * 60);
 pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 pub const TRUSTED_BROWSER_MAX_LIFETIME: Duration = Duration::from_secs(5 * 365 * 24 * 60 * 60);
 
@@ -61,14 +61,14 @@ impl fmt::Display for PairingError {
         match self {
             PairingError::MissingCode => f.write_str("enter the one-time pairing code"),
             PairingError::NoActiveCode => {
-                f.write_str("the host TUI is not offering a pairing code right now")
+                f.write_str("the host is not offering an access code right now")
             }
-            PairingError::InvalidCode => f.write_str("the pairing code was not correct"),
+            PairingError::InvalidCode => f.write_str("the access code was not correct"),
             PairingError::TooManyAttempts => {
-                f.write_str("too many wrong attempts; generate a new pairing code in the host TUI")
+                f.write_str("too many wrong attempts; generate a new access code on the host")
             }
             PairingError::CodeExpired => {
-                f.write_str("the pairing code expired; generate a new one in the host TUI")
+                f.write_str("the access code expired; generate a new one on the host")
             }
         }
     }

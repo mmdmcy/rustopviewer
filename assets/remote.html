@@ -2304,11 +2304,21 @@
         }
 
         const message = await response.text();
+        const detail = (message || "").trim();
+        const title = response.status === 429
+          ? "Approval locked"
+          : response.status === 401
+            ? "Access code expired"
+            : "Approval failed";
         showPairing(
-          "Approve this browser",
-          "The host did not accept that pairing attempt.",
-          message || "Generate a fresh one-time access code in the host console."
+          title,
+          detail || "The host did not accept that approval request.",
+          response.status === 401 || response.status === 429
+            ? "Generate a fresh one-time access code in the host console."
+            : "Check the current access code and try again."
         );
+        pairCodeInput.focus();
+        pairCodeInput.select();
       } catch (error) {
         showPairing(
           "Approve this browser",
