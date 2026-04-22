@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Remote Session</title>
+  <title>Workspace Console</title>
   <style>
     :root {
       --bg-0: #03070d;
@@ -561,15 +561,15 @@
       <div class="overlay" id="frameOverlay">
         <div class="overlay-card">
           <strong id="overlayTitle">Waiting for the host</strong>
-          <span id="overlayMessage">Open the newest browser URL from the host TUI if this does not clear on its own.</span>
+          <span id="overlayMessage">The live workspace will appear here when the host is ready.</span>
           <div class="pairing-panel" id="pairingPanel" hidden>
-            <input class="pair-code-input" id="pairCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Pairing code">
+            <input class="pair-code-input" id="pairCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Access code">
             <label class="remember-browser" for="rememberBrowserToggle">
               <input id="rememberBrowserToggle" type="checkbox" checked>
               <span>Remember this browser on this device</span>
             </label>
-            <button class="action" id="pairButton">Pair Browser</button>
-            <div class="pair-hint" id="pairHint">Generate a fresh one-time pairing code in the host TUI.</div>
+            <button class="action" id="pairButton">Approve Browser</button>
+            <div class="pair-hint" id="pairHint">Generate a fresh one-time access code in the host console.</div>
           </div>
         </div>
       </div>
@@ -707,9 +707,12 @@
       lastInteractionAt: 0,
       pointerEnabled: false,
       keyboardEnabled: false,
+      sessionActive: false,
       pairingBusy: false,
       trustedRestoreInFlight: false,
       trustedRestoreAvailable: true,
+      statusTimerId: 0,
+      statusRequestInFlight: false,
       frameTimerId: 0,
       frameRequestInFlight: false,
       lastFrameEtag: "",
@@ -780,8 +783,6 @@
       bindControls();
       syncUiState();
       refreshStatus();
-      scheduleNextFrame(0);
-      window.setInterval(refreshStatus, STATUS_INTERVAL_MS);
     }
 
     function bindControls() {
@@ -1191,6 +1192,7 @@
 
         if (response.ok) {
           state.trustedRestoreAvailable = true;
+          setSessionActive(true);
           return true;
         }
 
@@ -1206,7 +1208,45 @@
       }
     }
 
-    async function refreshStatus(allowTrustedRestore = true) {
+    function setSessionActive(active) {
+      const nextActive = !!active;
+      const wasActive = state.sessionActive;
+      state.sessionActive = nextActive;
+
+      if (!nextActive) {
+        if (state.frameTimerId) {
+          window.clearTimeout(state.frameTimerId);
+          state.frameTimerId = 0;
+        }
+        return;
+      }
+
+      if (!wasActive && !state.frameTimerId && !state.frameRequestInFlight) {
+        scheduleNextFrame(0);
+      }
+    }
+
+    function shouldPollStatus() {
+      return state.sessionActive || state.trustedRestoreAvailable;
+    }
+
+    function scheduleNextStatus(delayMs = STATUS_INTERVAL_MS) {
+      if (state.statusTimerId) {
+        window.clearTimeout(state.statusTimerId);
+      }
+
+      if (!shouldPollStatus()) {
+        state.statusTimerId = 0;
+        return;
+      }
+
+      state.statusTimerId = window.setTimeout(() => {
+        state.statusTimerId = 0;
+        refreshStatus();
+      }, Math.max(0, delayMs));
+    }
+
+    async function performStatusRefresh(allowTrustedRestore = true) {
       try {
         const response = await fetch(apiUrl("api/status"), {
           cache: "no-store",
@@ -1215,15 +1255,16 @@
 
         if (response.status === 401) {
           if (allowTrustedRestore && await restoreTrustedSession()) {
-            return refreshStatus(false);
+            return performStatusRefresh(false);
           }
 
+          setSessionActive(false);
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
-          setConnectionState("Pairing required", "Enter the one-time code from the host TUI", "warn");
-          showPairing("Pair this browser", "Enter the one-time pairing code shown in the host TUI.");
-          return;
+          setConnectionState("Approval required", "Enter the current access code from the host console", "warn");
+          showPairing("Approve this browser", "Enter the one-time access code shown in the host console.");
+          return false;
         }
 
         if (!response.ok) {
@@ -1236,6 +1277,7 @@
         state.activeFrameIntervalMs = Math.max(120, Number(payload.active_frame_interval_ms) || DEFAULT_ACTIVE_FRAME_INTERVAL_MS);
         state.idleFrameIntervalMs = Math.max(state.activeFrameIntervalMs, Number(payload.idle_frame_interval_ms) || DEFAULT_IDLE_FRAME_INTERVAL_MS);
         state.interactionBoostWindowMs = Math.max(600, Number(payload.interaction_boost_window_ms) || DEFAULT_INTERACTION_BOOST_MS);
+        setSessionActive(true);
         syncUiState();
         if (payload.selected_monitor) {
           const monitor = payload.selected_monitor;
@@ -1265,7 +1307,7 @@
             ? "Control scopes approved"
             : payload.host_elevated
               ? "View only - host runtime is elevated"
-              : "View only - enable control in the host TUI";
+              : "View only - enable control in the host console";
           setConnectionState("Connected", modeLabel, controlReady ? "ok" : "warn");
           if (!payload.has_frame && !state.frameReady) {
             showOverlay("Waiting for frame", "The host is connected but has not delivered the first frame yet.");
@@ -1273,21 +1315,38 @@
             hideOverlay();
           }
         }
+        return true;
       } catch (error) {
         setConnectionState("Offline", error.message, "error");
         if (!state.frameReady) {
           showOverlay("Offline", `Status request failed: ${error.message}`);
         }
+        return state.sessionActive;
+      }
+    }
+
+    async function refreshStatus(allowTrustedRestore = true) {
+      if (state.statusRequestInFlight) {
+        return state.sessionActive;
+      }
+
+      state.statusRequestInFlight = true;
+      try {
+        return await performStatusRefresh(allowTrustedRestore);
+      } finally {
+        state.statusRequestInFlight = false;
+        scheduleNextStatus();
       }
     }
 
     async function refreshFrame(allowTrustedRestore = true) {
-      if (state.frameRequestInFlight) {
+      if (!state.sessionActive || state.frameRequestInFlight) {
         return;
       }
 
       state.frameRequestInFlight = true;
       let immediateRetry = false;
+      let keepStreaming = state.sessionActive;
       try {
         const headers = {};
         if (state.lastFrameEtag) {
@@ -1306,10 +1365,12 @@
             return;
           }
 
+          setSessionActive(false);
+          keepStreaming = false;
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
-          showPairing("Pair this browser", "Your remote session expired. Enter a fresh pairing code from the host TUI.");
+          showPairing("Approve this browser", "This browser needs a fresh access code from the host console.");
           return;
         }
 
@@ -1350,7 +1411,9 @@
         }
       } finally {
         state.frameRequestInFlight = false;
-        scheduleNextFrame(immediateRetry ? 0 : nextFrameDelayMs());
+        if (keepStreaming && state.sessionActive) {
+          scheduleNextFrame(immediateRetry ? 0 : nextFrameDelayMs());
+        }
       }
     }
 
@@ -1466,11 +1529,12 @@
             });
           }
 
-          showPairing("Pair this browser", "Your remote session expired. Enter a fresh pairing code from the host TUI.");
+          setSessionActive(false);
+          showPairing("Approve this browser", "This browser needs a fresh access code from the host console.");
           return {
             ok: false,
             status: response.status,
-            message: "Your remote session expired. Pair this browser again."
+            message: "This browser needs a fresh access code."
           };
         }
 
@@ -1532,7 +1596,9 @@
 
     function markRecentInteraction() {
       state.lastInteractionAt = Date.now();
-      scheduleNextFrame(0);
+      if (state.sessionActive) {
+        scheduleNextFrame(0);
+      }
     }
 
     function nextFrameDelayMs() {
@@ -1543,6 +1609,14 @@
     }
 
     function scheduleNextFrame(delayMs) {
+      if (!state.sessionActive) {
+        if (state.frameTimerId) {
+          window.clearTimeout(state.frameTimerId);
+          state.frameTimerId = 0;
+        }
+        return;
+      }
+
       if (state.frameTimerId) {
         window.clearTimeout(state.frameTimerId);
       }
@@ -2176,9 +2250,10 @@
     }
 
     function showPairing(title, message, hint) {
+      setSessionActive(false);
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
-      pairHint.textContent = hint || "Generate a fresh one-time pairing code in the host TUI.";
+      pairHint.textContent = hint || "Generate a fresh one-time access code in the host console.";
       pairingPanel.hidden = false;
       frameOverlay.classList.remove("hidden");
     }
@@ -2190,15 +2265,15 @@
 
       const code = pairCodeInput.value.trim();
       if (!code) {
-        showPairing("Pair this browser", "Enter the one-time pairing code shown in the host TUI.", "Pairing requires the current one-time code from the host TUI.");
+        showPairing("Approve this browser", "Enter the one-time access code shown in the host console.", "Approval requires the current one-time access code from the host console.");
         pairCodeInput.focus();
         return;
       }
 
       state.pairingBusy = true;
       pairButton.disabled = true;
-      pairButton.textContent = "Pairing...";
-      pairHint.textContent = "Checking the one-time code with the host...";
+      pairButton.textContent = "Approving...";
+      pairHint.textContent = "Checking the one-time access code with the host...";
 
       try {
         const response = await fetch(apiUrl("api/pair"), {
@@ -2216,31 +2291,34 @@
         if (response.ok) {
           pairCodeInput.value = "";
           state.trustedRestoreAvailable = true;
+          setSessionActive(true);
           pairHint.textContent = rememberBrowserToggle?.checked === false
-            ? "Browser paired. Loading the live desktop..."
-            : "Browser paired and remembered on this device. Loading the live desktop...";
-          await refreshStatus(false);
-          markRecentInteraction();
-          scheduleNextFrame(0);
+            ? "Browser approved. Loading the live workspace..."
+            : "Browser approved and remembered on this device. Loading the live workspace...";
+          const connected = await refreshStatus(false);
+          if (connected) {
+            markRecentInteraction();
+            scheduleNextFrame(0);
+          }
           return;
         }
 
         const message = await response.text();
         showPairing(
-          "Pair this browser",
+          "Approve this browser",
           "The host did not accept that pairing attempt.",
-          message || "Generate a fresh one-time pairing code in the host TUI."
+          message || "Generate a fresh one-time access code in the host console."
         );
       } catch (error) {
         showPairing(
-          "Pair this browser",
+          "Approve this browser",
           "Pairing could not reach the host.",
           error.message || "Check the browser URL and try again."
         );
       } finally {
         state.pairingBusy = false;
         pairButton.disabled = false;
-        pairButton.textContent = "Pair Browser";
+        pairButton.textContent = "Approve Browser";
       }
     }
 

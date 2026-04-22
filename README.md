@@ -117,6 +117,12 @@ For unattended deployments after you have already approved at least one trusted 
 cargo run --release -- --headless
 ```
 
+To ask an already running local host for a fresh one-time pairing code without restarting it:
+
+```bash
+cargo run --release -- --generate-pair-code
+```
+
 To issue one one-time pairing code at startup without opening the TUI:
 
 ```bash
@@ -145,7 +151,7 @@ If you want ROV to stay available without a terminal window after you have alrea
 4. Revisit from the remembered browser and let it restore a fresh short-lived session automatically.
 
 Headless mode is meant for already approved browsers. A brand-new browser still needs a host-generated one-time pairing code first.
-If you are deliberately launching headless for that first approval, start it with `--print-pair-code` so the host logs one code at startup.
+If you are deliberately launching headless for that first approval, either start it with `--print-pair-code` so the host logs one code at startup, or launch it normally and use `rustopviewer --generate-pair-code` later without interrupting the running service.
 
 ### Optional: extra local reverse-proxy listeners
 

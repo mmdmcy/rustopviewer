@@ -19,6 +19,7 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Persistent trusted-browser records that can reissue normal sessions after a one-time pairing.
 - A supported `--headless` runtime for unattended deployments that already trust at least one browser.
 - A `--print-pair-code` startup option for issuing one host-approved pairing code while running headless.
+- A `--generate-pair-code` command for asking the running local host to mint a fresh code without a restart.
 - Support for `ROV_EXTRA_LISTEN_ADDRS` so trusted local reverse proxies can reach the host runtime without widening to a normal LAN bind.
 
 ### Changed
@@ -28,3 +29,4 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Generalized host and browser copy from a phone-only Windows workflow to Linux/Windows hosts with desktop or mobile browsers.
 - Updated the browser client to use relative API paths so it can sit behind a stripped reverse-proxy prefix.
 - Added host-side trust revocation and browser-side remembered-device session restoration.
+- Stopped the browser client from polling frame and status endpoints while it is still waiting for approval, which makes first-pair flows quieter and more reliable.
