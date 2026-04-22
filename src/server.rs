@@ -202,9 +202,22 @@ async fn pair(
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
 
-    let grant = state
-        .issue_pairing_session(&request.code, user_agent, request.remember_browser)
-        .map_err(pairing_error_response)?;
+    let grant = match state.issue_pairing_session(
+        &request.code,
+        user_agent.clone(),
+        request.remember_browser,
+    ) {
+        Ok(grant) => grant,
+        Err(error) => {
+            tracing::warn!(
+                error = ?error,
+                remember_browser = request.remember_browser,
+                user_agent = user_agent.as_deref().unwrap_or("unknown"),
+                "Browser approval request failed"
+            );
+            return Err(pairing_error_response(error));
+        }
+    };
     state
         .enable_remote_control_for_paired_client()
         .map_err(|_| {
