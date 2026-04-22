@@ -19,6 +19,7 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Persistent trusted-browser records that can reissue normal sessions after a one-time pairing.
 - A supported `--headless` runtime for unattended deployments that already trust at least one browser.
 - A `--print-pair-code` startup option for issuing one host-approved pairing code while running headless.
+- Support for `ROV_EXTRA_LISTEN_ADDRS` so trusted local reverse proxies can reach the host runtime without widening to a normal LAN bind.
 
 ### Changed
 
