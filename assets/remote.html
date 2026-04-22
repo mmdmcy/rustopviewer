@@ -445,6 +445,14 @@
       right: 12px;
     }
 
+    body.desktop-client .hud-bottom,
+    body.desktop-client .sheet,
+    body.desktop-client #keyboardBtn,
+    body.desktop-client #toolsToggleBtn,
+    body.desktop-client #quickKeyboardBtn {
+      display: none !important;
+    }
+
     .return-dock {
       position: absolute;
       left: auto;
@@ -683,6 +691,9 @@
     const SCROLL_START_PX = 14;
     const SCROLL_STEP_PX = 24;
     const TAP_MOVE_TOLERANCE_PX = 12;
+    const SESSION_STORAGE_KEY = "rov_session";
+    const TRUSTED_STORAGE_KEY = "rov_trusted";
+    const DESKTOP_INPUT_MEDIA_QUERY = "(hover: hover) and (pointer: fine)";
 
     const state = {
       dragMode: false,
@@ -705,11 +716,15 @@
       keyboardVisible: false,
       lastTextInputAt: 0,
       lastInteractionAt: 0,
+      desktopClient: false,
+      fitScale: 1,
       pointerEnabled: false,
       keyboardEnabled: false,
       sessionActive: false,
+      sessionToken: "",
       pairingBusy: false,
       trustedRestoreInFlight: false,
+      trustedToken: "",
       trustedRestoreAvailable: true,
       statusTimerId: 0,
       statusRequestInFlight: false,
@@ -771,6 +786,9 @@
     const rightClickModeBtn = document.getElementById("rightClickModeBtn");
     const textInput = document.getElementById("textInput");
     const sendTextBtn = document.getElementById("sendTextBtn");
+    const desktopInputMedia = typeof window.matchMedia === "function"
+      ? window.matchMedia(DESKTOP_INPUT_MEDIA_QUERY)
+      : null;
     let viewportLayoutFrame = 0;
 
     boot();
@@ -779,10 +797,143 @@
       return new URL(path.replace(/^\/+/, ""), APP_BASE_URL).toString();
     }
 
+    function readStoredToken(key) {
+      try {
+        const value = window.localStorage.getItem(key);
+        return value && value.trim() ? value.trim() : "";
+      } catch {
+        return "";
+      }
+    }
+
+    function writeStoredToken(key, value) {
+      try {
+        if (value && `${value}`.trim()) {
+          window.localStorage.setItem(key, `${value}`.trim());
+        } else {
+          window.localStorage.removeItem(key);
+        }
+      } catch {
+        // Ignore local storage failures and rely on cookies when available.
+      }
+    }
+
+    function syncStoredTokensFromState() {
+      writeStoredToken(SESSION_STORAGE_KEY, state.sessionToken);
+      writeStoredToken(TRUSTED_STORAGE_KEY, state.trustedToken);
+    }
+
+    function applyIssuedTokens(response) {
+      const sessionToken = response.headers.get("x-rov-session");
+      const trustedToken = response.headers.get("x-rov-trusted");
+      if (sessionToken && sessionToken.trim()) {
+        state.sessionToken = sessionToken.trim();
+      }
+      if (trustedToken && trustedToken.trim()) {
+        state.trustedToken = trustedToken.trim();
+      }
+      syncStoredTokensFromState();
+    }
+
+    function authHeaders(extraHeaders = {}) {
+      const headers = { ...extraHeaders };
+      if (state.sessionToken) {
+        headers["X-ROV-Session"] = state.sessionToken;
+      }
+      if (state.trustedToken) {
+        headers["X-ROV-Trusted"] = state.trustedToken;
+      }
+      return headers;
+    }
+
+    function detectDesktopClient() {
+      return !!desktopInputMedia?.matches;
+    }
+
+    function syncDesktopClientState() {
+      body.classList.toggle("desktop-client", state.desktopClient);
+      if (!state.desktopClient) {
+        return;
+      }
+
+      state.toolsOpen = false;
+      state.keyboardVisible = false;
+      if (document.activeElement === textInput) {
+        textInput.blur();
+      }
+    }
+
     function boot() {
+      state.sessionToken = readStoredToken(SESSION_STORAGE_KEY);
+      state.trustedToken = readStoredToken(TRUSTED_STORAGE_KEY);
+      state.trustedRestoreAvailable = !!state.trustedToken;
+      state.desktopClient = detectDesktopClient();
+      const hasPairRedirectState = applyPairRedirectState();
       bindControls();
+      syncDesktopClientState();
       syncUiState();
-      refreshStatus();
+      if (!hasPairRedirectState) {
+        refreshStatus();
+      }
+    }
+
+    function applyPairRedirectState() {
+      const currentUrl = new URL(window.location.href);
+      const pairError = currentUrl.searchParams.get("pair_error");
+      if (!pairError) {
+        return false;
+      }
+
+      const details = pairErrorState(pairError);
+      showPairing(details.title, details.message, details.hint);
+      pairCodeInput.value = "";
+      pairCodeInput.focus();
+      currentUrl.searchParams.delete("pair_error");
+      const nextSearch = currentUrl.searchParams.toString();
+      const nextUrl = `${currentUrl.pathname}${nextSearch ? `?${nextSearch}` : ""}${currentUrl.hash}`;
+      window.history.replaceState({}, "", nextUrl);
+      return true;
+    }
+
+    function pairErrorState(code) {
+      switch ((code || "").trim()) {
+        case "missing_code":
+          return {
+            title: "Approval failed",
+            message: "Enter the current access code from the host.",
+            hint: "Approval requires the current one-time access code from the host console."
+          };
+        case "invalid_code":
+          return {
+            title: "Approval failed",
+            message: "The access code was not correct.",
+            hint: "Check the current access code and try again."
+          };
+        case "no_active_code":
+          return {
+            title: "Access code missing",
+            message: "The host is not offering an access code right now.",
+            hint: "Generate a fresh one-time access code in the host console."
+          };
+        case "code_expired":
+          return {
+            title: "Access code expired",
+            message: "The access code expired before the host could use it.",
+            hint: "Generate a fresh one-time access code in the host console."
+          };
+        case "too_many_attempts":
+          return {
+            title: "Approval locked",
+            message: "Too many wrong attempts were sent for this access code.",
+            hint: "Generate a fresh one-time access code in the host console."
+          };
+        default:
+          return {
+            title: "Approval failed",
+            message: "The host could not finish that approval request.",
+            hint: "Try again with a fresh access code."
+          };
+      }
     }
 
     function bindControls() {
@@ -811,6 +962,14 @@
       window.addEventListener("resize", scheduleViewportLayout);
       window.visualViewport?.addEventListener("resize", scheduleViewportLayout);
       window.visualViewport?.addEventListener("scroll", scheduleViewportLayout);
+      window.addEventListener("keydown", onDesktopKeyDown, { capture: true });
+      window.addEventListener("keyup", onDesktopKeyUp, { capture: true });
+
+      if (desktopInputMedia?.addEventListener) {
+        desktopInputMedia.addEventListener("change", onDesktopInputMediaChange);
+      } else if (desktopInputMedia?.addListener) {
+        desktopInputMedia.addListener(onDesktopInputMediaChange);
+      }
 
       [toolsSheet, textInput, pairingPanel, pairCodeInput]
         .filter(Boolean)
@@ -1032,6 +1191,17 @@
       frameSurface.addEventListener("touchcancel", onTouchCancel, { passive: false });
     }
 
+    function onDesktopInputMediaChange() {
+      const nextDesktopClient = detectDesktopClient();
+      if (state.desktopClient === nextDesktopClient) {
+        return;
+      }
+
+      state.desktopClient = nextDesktopClient;
+      syncDesktopClientState();
+      syncUiState();
+    }
+
     function bindTap(element, handler) {
       if (!element) {
         return;
@@ -1187,16 +1357,21 @@
         const response = await fetch(apiUrl("api/session/restore"), {
           method: "POST",
           cache: "no-store",
+          headers: authHeaders(),
           credentials: "same-origin"
         });
 
         if (response.ok) {
+          applyIssuedTokens(response);
           state.trustedRestoreAvailable = true;
           setSessionActive(true);
           return true;
         }
 
         if (response.status === 401 || response.status === 403) {
+          state.sessionToken = "";
+          state.trustedToken = "";
+          syncStoredTokensFromState();
           state.trustedRestoreAvailable = false;
         }
 
@@ -1246,14 +1421,32 @@
       }, Math.max(0, delayMs));
     }
 
+    function stopPolling() {
+      state.sessionActive = false;
+      state.trustedRestoreAvailable = !!state.trustedToken;
+      state.statusRequestInFlight = false;
+      state.frameRequestInFlight = false;
+      if (state.statusTimerId) {
+        window.clearTimeout(state.statusTimerId);
+        state.statusTimerId = 0;
+      }
+      if (state.frameTimerId) {
+        window.clearTimeout(state.frameTimerId);
+        state.frameTimerId = 0;
+      }
+    }
+
     async function performStatusRefresh(allowTrustedRestore = true) {
       try {
         const response = await fetch(apiUrl("api/status"), {
           cache: "no-store",
+          headers: authHeaders(),
           credentials: "same-origin"
         });
 
         if (response.status === 401) {
+          state.sessionToken = "";
+          syncStoredTokensFromState();
           if (allowTrustedRestore && await restoreTrustedSession()) {
             return performStatusRefresh(false);
           }
@@ -1356,10 +1549,12 @@
         const response = await fetch(apiUrl("api/frame.jpg"), {
           cache: "no-store",
           credentials: "same-origin",
-          headers
+          headers: authHeaders(headers)
         });
 
         if (response.status === 401) {
+          state.sessionToken = "";
+          syncStoredTokensFromState();
           if (allowTrustedRestore && await restoreTrustedSession()) {
             immediateRetry = true;
             return;
@@ -1514,14 +1709,16 @@
       try {
         const response = await fetch(apiUrl("api/input"), {
           method: "POST",
-          headers: {
+          headers: authHeaders({
             "Content-Type": "application/json"
-          },
+          }),
           body: JSON.stringify(body),
           credentials: "same-origin"
         });
 
         if (response.status === 401) {
+          state.sessionToken = "";
+          syncStoredTokensFromState();
           if (allowTrustedRestore && await restoreTrustedSession()) {
             return sendCommand(body, {
               ...options,
@@ -1860,14 +2057,179 @@
         return;
       }
 
-      const horizontal = wheelDeltaToSteps(event.deltaX);
-      const vertical = wheelDeltaToSteps(event.deltaY);
+      let horizontal = wheelDeltaToSteps(event.deltaX);
+      let vertical = wheelDeltaToSteps(event.deltaY);
+      if (!horizontal && event.shiftKey && vertical) {
+        horizontal = vertical;
+        vertical = 0;
+      }
       if (!horizontal && !vertical) {
         return;
       }
 
       event.preventDefault();
       sendCommand({ type: "scroll", horizontal, vertical });
+    }
+
+    function onDesktopKeyDown(event) {
+      if (!shouldCaptureDesktopKeyEvent(event)) {
+        return;
+      }
+
+      const remoteKey = keyToRemoteKey(event);
+      const printable = isPrintableDesktopKey(event);
+      const shortcutKeys = shortcutKeysFromEvent(event, remoteKey, printable);
+
+      if (shortcutKeys.length) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) {
+          sendCommand({ type: "shortcut", keys: shortcutKeys });
+        }
+        return;
+      }
+
+      if (printable) {
+        event.preventDefault();
+        event.stopPropagation();
+        sendCommand({ type: "text", text: event.key });
+        return;
+      }
+
+      if (!remoteKey) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (!isModifierRemoteKey(remoteKey)) {
+        sendCommand({ type: "key", key: remoteKey });
+      }
+    }
+
+    function onDesktopKeyUp(event) {
+      if (!shouldCaptureDesktopKeyEvent(event)) {
+        return;
+      }
+
+      const remoteKey = keyToRemoteKey(event);
+      if (!isModifierRemoteKey(remoteKey)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    function shouldCaptureDesktopKeyEvent(event) {
+      return !(
+        !state.desktopClient ||
+        !state.sessionActive ||
+        !state.keyboardEnabled ||
+        state.pairingBusy ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        !pairingPanel.hidden ||
+        isEditableInputTarget(event.target)
+      );
+    }
+
+    function isEditableInputTarget(target) {
+      if (!target || typeof target.closest !== "function") {
+        return false;
+      }
+
+      return Boolean(
+        target.closest(
+          "input, textarea, select, [contenteditable=''], [contenteditable='true'], [contenteditable='plaintext-only']"
+        )
+      );
+    }
+
+    function isPrintableDesktopKey(event) {
+      return event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey;
+    }
+
+    function keyToRemoteKey(event) {
+      switch (event.key) {
+        case "Enter":
+          return "enter";
+        case "Escape":
+        case "Esc":
+          return "escape";
+        case "Tab":
+          return "tab";
+        case "Backspace":
+          return "backspace";
+        case " ":
+        case "Spacebar":
+          return "space";
+        case "Delete":
+          return "delete";
+        case "Home":
+          return "home";
+        case "End":
+          return "end";
+        case "PageUp":
+          return "page_up";
+        case "PageDown":
+          return "page_down";
+        case "ArrowUp":
+          return "up_arrow";
+        case "ArrowDown":
+          return "down_arrow";
+        case "ArrowLeft":
+          return "left_arrow";
+        case "ArrowRight":
+          return "right_arrow";
+        case "Control":
+          return "control";
+        case "Shift":
+          return "shift";
+        case "Alt":
+        case "AltGraph":
+          return "alt";
+        case "Meta":
+        case "OS":
+          return "meta";
+        default:
+          if (/^[a-z]$/i.test(event.key)) {
+            return event.key.toLowerCase();
+          }
+
+          if (/^F(?:[1-9]|1[0-2])$/.test(event.key)) {
+            return event.key.toLowerCase();
+          }
+
+          return "";
+      }
+    }
+
+    function isModifierRemoteKey(remoteKey) {
+      return remoteKey === "control" || remoteKey === "shift" || remoteKey === "alt" || remoteKey === "meta";
+    }
+
+    function shortcutKeysFromEvent(event, remoteKey, printable) {
+      const keys = [];
+      if (event.ctrlKey) {
+        keys.push("control");
+      }
+      if (event.altKey) {
+        keys.push("alt");
+      }
+      if (event.metaKey) {
+        keys.push("meta");
+      }
+      if (event.shiftKey && (!printable || keys.length > 0)) {
+        keys.push("shift");
+      }
+
+      if (!keys.length || !remoteKey || isModifierRemoteKey(remoteKey)) {
+        return [];
+      }
+
+      keys.push(remoteKey);
+      return keys;
     }
 
     function onContextMenu(event) {
@@ -2065,7 +2427,7 @@
     }
 
     function zoomBy(delta) {
-      state.viewScale = clamp(Number((state.viewScale + delta).toFixed(2)), 1, 4);
+      state.viewScale = clamp(Number((state.viewScale + delta).toFixed(2)), 0.5, 4);
       if (state.viewScale <= 1.001) {
         state.viewScale = 1;
         state.viewOffsetX = 0;
@@ -2097,18 +2459,25 @@
     }
 
     function clampViewOffset() {
-      const baseWidth = frameImage.offsetWidth || 0;
-      const baseHeight = frameImage.offsetHeight || 0;
-      if (!baseWidth || !baseHeight || state.viewScale <= 1.001) {
+      const viewerRect = frameSurface.getBoundingClientRect();
+      const topInset = parseFloat(frameSurface.style.getPropertyValue("--viewer-top-inset")) || 0;
+      const bottomInset = parseFloat(frameSurface.style.getPropertyValue("--viewer-bottom-inset")) || 0;
+      const availableWidth = viewerRect.width || 0;
+      const availableHeight = Math.max(0, viewerRect.height - topInset - bottomInset);
+      const naturalWidth = frameImage.naturalWidth || frameImage.offsetWidth || 0;
+      const naturalHeight = frameImage.naturalHeight || frameImage.offsetHeight || 0;
+      const renderedWidth = naturalWidth * effectiveViewScale();
+      const renderedHeight = naturalHeight * effectiveViewScale();
+      if (!renderedWidth || !renderedHeight || state.viewScale <= 1.001) {
         state.viewOffsetX = 0;
         state.viewOffsetY = 0;
         return;
       }
 
-      const maxOffsetX = ((baseWidth * state.viewScale) - baseWidth) / 2;
-      const maxOffsetY = ((baseHeight * state.viewScale) - baseHeight) / 2;
-      state.viewOffsetX = clamp(state.viewOffsetX, -maxOffsetX, maxOffsetX);
-      state.viewOffsetY = clamp(state.viewOffsetY, -maxOffsetY, maxOffsetY);
+      const maxOffsetX = Math.max(0, (renderedWidth - availableWidth) / 2);
+      const maxOffsetY = Math.max(0, (renderedHeight - availableHeight) / 2);
+      state.viewOffsetX = maxOffsetX > 0 ? clamp(state.viewOffsetX, -maxOffsetX, maxOffsetX) : 0;
+      state.viewOffsetY = maxOffsetY > 0 ? clamp(state.viewOffsetY, -maxOffsetY, maxOffsetY) : 0;
     }
 
     function scheduleViewportLayout() {
@@ -2142,8 +2511,22 @@
 
       frameSurface.style.setProperty("--viewer-top-inset", `${Math.ceil(topInset)}px`);
       frameSurface.style.setProperty("--viewer-bottom-inset", `${Math.ceil(bottomInset)}px`);
+      updateFitScale(viewerRect, topInset, bottomInset);
       clampViewOffset();
       applyViewTransform();
+    }
+
+    function updateFitScale(viewerRect, topInset, bottomInset) {
+      const naturalWidth = frameImage.naturalWidth || frameImage.offsetWidth || 0;
+      const naturalHeight = frameImage.naturalHeight || frameImage.offsetHeight || 0;
+      const availableWidth = viewerRect.width || 0;
+      const availableHeight = Math.max(0, viewerRect.height - topInset - bottomInset);
+      if (!naturalWidth || !naturalHeight || !availableWidth || !availableHeight) {
+        state.fitScale = 1;
+        return;
+      }
+
+      state.fitScale = Math.min(availableWidth / naturalWidth, availableHeight / naturalHeight, 1);
     }
 
     function measureOverlayInset(element, containerRect, edge) {
@@ -2161,7 +2544,11 @@
 
     function applyViewTransform() {
       screenPan.style.transform = `translate3d(${state.viewOffsetX}px, ${state.viewOffsetY}px, 0)`;
-      frameImage.style.transform = `scale(${state.viewScale})`;
+      frameImage.style.transform = `scale(${effectiveViewScale()})`;
+    }
+
+    function effectiveViewScale() {
+      return Math.max(0.05, state.fitScale * state.viewScale);
     }
 
     function beginTouchGesture(touches) {
@@ -2274,62 +2661,38 @@
       pairButton.disabled = true;
       pairButton.textContent = "Approving...";
       pairHint.textContent = "Checking the one-time access code with the host...";
+      stopPolling();
+      showOverlay(
+        "Submitting approval",
+        rememberBrowserToggle?.checked === false
+          ? "Sending the access code to the host..."
+          : "Sending the access code to the host and saving this browser..."
+      );
+      submitPairApproval(code, rememberBrowserToggle?.checked !== false);
+    }
 
-      try {
-        const response = await fetch(apiUrl("api/pair"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            code,
-            remember_browser: rememberBrowserToggle?.checked !== false
-          }),
-          credentials: "same-origin"
-        });
+    function submitPairApproval(code, rememberBrowser) {
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = apiUrl("pair/browser");
+      form.style.display = "none";
 
-        if (response.ok) {
-          pairCodeInput.value = "";
-          state.trustedRestoreAvailable = true;
-          setSessionActive(true);
-          pairHint.textContent = rememberBrowserToggle?.checked === false
-            ? "Browser approved. Loading the live workspace..."
-            : "Browser approved and remembered on this device. Loading the live workspace...";
-          const connected = await refreshStatus(false);
-          if (connected) {
-            markRecentInteraction();
-            scheduleNextFrame(0);
-          }
-          return;
-        }
+      const codeInput = document.createElement("input");
+      codeInput.type = "hidden";
+      codeInput.name = "code";
+      codeInput.value = code;
+      form.appendChild(codeInput);
 
-        const message = await response.text();
-        const detail = (message || "").trim();
-        const title = response.status === 429
-          ? "Approval locked"
-          : response.status === 401
-            ? "Access code expired"
-            : "Approval failed";
-        showPairing(
-          title,
-          detail || "The host did not accept that approval request.",
-          response.status === 401 || response.status === 429
-            ? "Generate a fresh one-time access code in the host console."
-            : "Check the current access code and try again."
-        );
-        pairCodeInput.focus();
-        pairCodeInput.select();
-      } catch (error) {
-        showPairing(
-          "Approve this browser",
-          "Pairing could not reach the host.",
-          error.message || "Check the browser URL and try again."
-        );
-      } finally {
-        state.pairingBusy = false;
-        pairButton.disabled = false;
-        pairButton.textContent = "Approve Browser";
+      if (rememberBrowser) {
+        const rememberInput = document.createElement("input");
+        rememberInput.type = "hidden";
+        rememberInput.name = "remember_browser";
+        rememberInput.value = "on";
+        form.appendChild(rememberInput);
       }
+
+      document.body.appendChild(form);
+      form.submit();
     }
 
     function isCommandAllowed(body) {

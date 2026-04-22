@@ -63,12 +63,15 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Balanced, Data Saver, and Emergency stream profiles for browser-friendly bandwidth use
 - Mouse move, click, drag, and wheel input
 - Desktop-browser wheel, right-click, and middle-click support
-- Keyboard shortcuts and plain-text input
+- Desktop-browser physical keyboard capture plus plain-text and shortcut actions
+- Mobile-only touch control chrome that stays out of the way on desktop browsers
 - Touch zoom and panning on mobile browsers
+- Fit-to-window scaling with manual zoom in and out from the browser
 - Pair-approved control that automatically restores pointer and keyboard unless the host is elevated, with host-side toggles for view-only when desired
 - Remembered browsers can automatically refresh their short-lived session after host restarts or daily session expiry
 - Loopback plus optional Tailscale-tailnet host listeners
 - Relative browser API paths so the client can sit behind a stripped reverse-proxy prefix
+- Browser-side session recovery that keeps same-origin API calls working through stricter reverse proxies
 
 ## Current Limitations
 
@@ -79,7 +82,7 @@ Notable current limitations:
 - Linux builds currently depend on desktop capture libraries provided by the host OS
 - The host session must already be awake and unlocked
 - Remote input is intentionally locked out while ROV runs elevated
-- Remembered access still depends on the browser keeping its cookies and the host not revoking that device
+- Remembered access still depends on the browser retaining its local session storage and the host not revoking that device
 - No audio streaming
 - No clipboard sync
 - No file transfer
@@ -87,6 +90,13 @@ Notable current limitations:
 - `Ctrl+Alt+Del` is intentionally out of scope for a normal user-space app
 
 ## Quick Start
+
+The default path is intentionally local-first:
+
+1. Run ROV on the host.
+2. Open the local URL from the host itself.
+3. Approve one browser with a one-time code.
+4. Revisit from that browser later if you enabled remembered trust.
 
 ### Requirements
 
@@ -111,6 +121,12 @@ Depending on the desktop session and distro, additional capture-related packages
 cargo run --release
 ```
 
+Then open the best local URL shown in the host TUI. The default one is usually:
+
+```text
+http://127.0.0.1:45080/
+```
+
 For unattended deployments after you have already approved at least one trusted browser:
 
 ```bash
@@ -131,15 +147,25 @@ cargo run --release -- --headless --print-pair-code
 
 On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
 
-### Use it from a browser
+### First local browser session
 
 1. Launch ROV on the host machine.
-2. Open the best available URL shown in the host TUI.
-3. If you want a private tailnet URL, start Tailscale and use **Enable Tailscale URL**.
-4. If you want a reverse-proxy or tunnel deployment, publish the loopback listener instead of opening a normal LAN listener.
-5. Generate a one-time pairing code in the host TUI and enter it in the browser page.
-6. Leave **Remember this browser on this device** enabled if you want that browser to reconnect without another code later.
-7. Use the remote page to control the desktop. If you want view-only later, turn either input scope off in the host TUI.
+2. Open the best available URL shown in the host TUI, typically `http://127.0.0.1:45080/`.
+3. Generate a one-time pairing code in the host TUI and enter it in the browser page.
+4. Leave **Remember this browser on this device** enabled if you want that browser to reconnect later without another code.
+5. Use the remote page to control the desktop.
+
+Desktop browsers:
+
+- Use the physical keyboard directly.
+- Use the normal mouse wheel for vertical scrolling.
+- Use `Shift+wheel` for horizontal scrolling when the local mouse supports it.
+- Use browser zoom controls inside ROV for closer inspection after the default fit-to-window layout loads.
+
+Mobile browsers:
+
+- Keep the on-screen keyboard, tool sheet, and touch control buttons.
+- Use touch panning and pinch gestures inside the frame viewer.
 
 ### Optional: headless runtime after first approval
 
@@ -152,6 +178,10 @@ If you want ROV to stay available without a terminal window after you have alrea
 
 Headless mode is meant for already approved browsers. A brand-new browser still needs a host-generated one-time pairing code first.
 If you are deliberately launching headless for that first approval, either start it with `--print-pair-code` so the host logs one code at startup, or launch it normally and use `rustopviewer --generate-pair-code` later without interrupting the running service.
+
+## Optional Deployment Paths
+
+ROV works out of the box on one machine with no extra network setup. The options below are for publishing that same loopback-first host to other private paths you already trust.
 
 ### Optional: extra local reverse-proxy listeners
 
@@ -199,7 +229,8 @@ ROV is designed to be published from loopback through infrastructure you already
 
 - Keep the host TUI runtime listening on `127.0.0.1`.
 - Proxy a hostname or subpath back to that loopback listener.
-- Preserve cookies and same-origin requests.
+- Preserve same-origin requests.
+- Preserve cookies when possible. If an intermediary is stricter about background cookie handling, the built-in client can also continue same-origin API requests with the browser-bound session and remembered-browser tokens it already received from the host.
 - If you mount ROV under a stripped path prefix, the built-in browser client now uses relative API paths so it can still reach `api/*` correctly.
 
 ## Repository Standards
@@ -234,8 +265,8 @@ cargo test --all-targets --all-features
 - Opening the browser page is not enough to gain control. A new browser session must be paired with a one-time code generated in the host TUI.
 - A successfully paired browser can optionally become a remembered browser on that device and later refresh its normal session automatically.
 - Headless runtime is intended for already approved browsers; a new browser still needs a host-approved one-time code first.
-- Approved sessions are cookie-based, single-device, host-revocable, and stay paired for up to 24 hours without an idle timeout.
-- Remembered-browser trust survives host restarts until the host revokes it, but it still depends on the browser retaining its cookies.
+- Approved sessions are browser-bound, single-device, host-revocable, and stay paired for up to 24 hours without an idle timeout.
+- Remembered-browser trust survives host restarts until the host revokes it, but it still depends on the browser retaining its local browser storage.
 - A successful pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
 - Running ROV elevated forces remote input back to view-only.
 - The host TUI can revoke all remembered browsers immediately.
