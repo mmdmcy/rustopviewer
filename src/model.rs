@@ -65,3 +65,14 @@ pub struct StatusResponse {
     pub session_cached_frame_hits: Option<u64>,
     pub session_status_responses: Option<u64>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceInfoResponse {
+    pub device_code: String,
+    pub username: Option<String>,
+    pub hostname: Option<String>,
+    pub display_name: String,
+    pub os: String,
+    pub os_family: String,
+    pub password_enabled: bool,
+}

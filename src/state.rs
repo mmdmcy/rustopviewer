@@ -6,12 +6,15 @@ use std::{
 };
 
 use crate::{
-    config::{AppConfig, ConfigStore, StreamProfile, StreamSettings},
+    config::{AppConfig, ConfigStore, StreamProfile, StreamSettings, normalize_device_code},
     input::InputCommand,
-    model::{LatestFrame, MonitorInfo, StatusResponse},
+    model::{DeviceInfoResponse, LatestFrame, MonitorInfo, StatusResponse},
+    platform,
     security::{
-        IssuePairingError, PairCodeSnapshot, SessionAuthError, SessionGrant, SessionSnapshot,
-        SessionStore, TrustedBrowserAuthError, TrustedBrowserSnapshot, TrustedBrowserStore,
+        IssueAccessPasswordError, IssuePairingError, PairCodeSnapshot, SessionAuthError,
+        SessionGrant, SessionSnapshot, SessionStore, TrustedBrowserAuthError,
+        TrustedBrowserSnapshot, TrustedBrowserStore, access_password_config_from_plaintext,
+        admin_token_matches_hash,
     },
 };
 
@@ -24,6 +27,7 @@ pub struct AppState {
     input_tx: Sender<InputCommand>,
     sessions: RwLock<SessionStore>,
     is_elevated: bool,
+    admin_token_hash: Option<String>,
 }
 
 impl AppState {
@@ -34,6 +38,7 @@ impl AppState {
         input_tx: Sender<InputCommand>,
         trusted_browser_store: TrustedBrowserStore,
         is_elevated: bool,
+        admin_token_hash: Option<String>,
     ) -> Result<Self> {
         config.normalize();
 
@@ -46,6 +51,7 @@ impl AppState {
             input_tx,
             sessions: RwLock::new(SessionStore::new(trusted_browser_store)?),
             is_elevated,
+            admin_token_hash,
         })
     }
 
@@ -65,8 +71,29 @@ impl AppState {
         self.config.read().port
     }
 
+    pub fn device_code(&self) -> String {
+        self.config.read().device_code.clone()
+    }
+
+    pub fn access_password_configured(&self) -> bool {
+        self.config.read().access_password.is_some()
+    }
+
     pub fn is_elevated(&self) -> bool {
         self.is_elevated
+    }
+
+    pub fn admin_token_required(&self) -> bool {
+        self.admin_token_hash.is_some()
+    }
+
+    pub fn authorize_admin_token(&self, token: Option<&str>) -> bool {
+        match self.admin_token_hash.as_deref() {
+            Some(token_hash) => token
+                .map(|token| admin_token_matches_hash(token_hash, token))
+                .unwrap_or(false),
+            None => true,
+        }
     }
 
     pub fn selected_monitor_id(&self) -> Option<u32> {
@@ -108,6 +135,32 @@ impl AppState {
     pub fn set_selected_monitor(&self, monitor_id: u32) -> Result<()> {
         let mut config = self.config.write();
         config.selected_monitor_id = Some(monitor_id);
+        self.config_store.save(&config)?;
+        Ok(())
+    }
+
+    pub fn set_device_code(&self, device_code: &str) -> Result<String> {
+        let device_code = normalize_device_code(device_code).ok_or_else(|| {
+            anyhow!("device codes must be 4-32 ASCII letters, numbers, '-' or '_'")
+        })?;
+        let mut config = self.config.write();
+        config.device_code = device_code.clone();
+        self.config_store.save(&config)?;
+        Ok(device_code)
+    }
+
+    pub fn set_access_password(&self, password: &str) -> Result<()> {
+        let access_password = access_password_config_from_plaintext(password)
+            .map_err(|err| anyhow!(err.to_string()))?;
+        let mut config = self.config.write();
+        config.access_password = Some(access_password);
+        self.config_store.save(&config)?;
+        Ok(())
+    }
+
+    pub fn clear_access_password(&self) -> Result<()> {
+        let mut config = self.config.write();
+        config.access_password = None;
         self.config_store.save(&config)?;
         Ok(())
     }
@@ -166,6 +219,7 @@ impl AppState {
             let mut config = self.config.write();
             config.remote_pointer_enabled = false;
             config.remote_keyboard_enabled = false;
+            config.access_password = None;
             self.config_store.save(&config)?;
         }
 
@@ -219,6 +273,24 @@ impl AppState {
         self.sessions
             .write()
             .issue_pairing_session(code, user_agent, remember_browser)
+    }
+
+    pub fn issue_access_password_session(
+        &self,
+        device_code: &str,
+        password: &str,
+        user_agent: Option<String>,
+        remember_browser: bool,
+    ) -> Result<SessionGrant, IssueAccessPasswordError> {
+        let config = self.config.read();
+        self.sessions.write().issue_access_password_session(
+            device_code,
+            &config.device_code,
+            password,
+            config.access_password.as_ref(),
+            user_agent,
+            remember_browser,
+        )
     }
 
     pub fn restore_trusted_browser_session(
@@ -381,6 +453,27 @@ impl AppState {
 
     pub fn config_path(&self) -> PathBuf {
         self.config_store.path().to_path_buf()
+    }
+
+    pub fn device_info_response(&self) -> DeviceInfoResponse {
+        let username = platform::username();
+        let hostname = platform::hostname();
+        let display_name = match (username.as_deref(), hostname.as_deref()) {
+            (Some(username), Some(hostname)) => format!("{username}@{hostname}"),
+            (Some(username), None) => username.to_string(),
+            (None, Some(hostname)) => hostname.to_string(),
+            (None, None) => "RustOp host".to_string(),
+        };
+
+        DeviceInfoResponse {
+            device_code: self.device_code(),
+            username,
+            hostname,
+            display_name,
+            os: platform::os_label(),
+            os_family: platform::os_family(),
+            password_enabled: self.access_password_configured(),
+        }
     }
 }
 

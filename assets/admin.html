@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RustOp Admin</title>
+  <style>
+    :root {
+      --bg: #080b10;
+      --surface: #101722;
+      --surface-2: #151e2a;
+      --line: #263445;
+      --ink: #eef4fb;
+      --muted: #93a4b8;
+      --accent: #f97316;
+      --ok: #4ade80;
+      --warn: #f59e0b;
+      --danger: #f87171;
+      --font: "Segoe UI Variable Display", "SF Pro Display", "Aptos", sans-serif;
+      --mono: "Cascadia Code", "SF Mono", "Consolas", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--font);
+    }
+
+    body {
+      padding: calc(env(safe-area-inset-top) + 14px) 14px calc(env(safe-area-inset-bottom) + 14px);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      appearance: none;
+      min-height: 38px;
+      border: 1px solid #34465c;
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: var(--ink);
+      background: #1a2635;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #4a6380;
+      background: #213044;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    button.primary {
+      border-color: rgba(249, 115, 22, 0.68);
+      background: #8a3b12;
+    }
+
+    button.danger {
+      border-color: rgba(248, 113, 113, 0.7);
+      background: #6e1f26;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid #304155;
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: var(--ink);
+      background: #09111a;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      min-height: 18px;
+      inline-size: 18px;
+      block-size: 18px;
+      accent-color: var(--accent);
+    }
+
+    .shell {
+      width: min(1180px, 100%);
+      margin: 0 auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 14px;
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 1.25rem;
+    }
+
+    h2 {
+      font-size: 1rem;
+    }
+
+    .subtle,
+    .field span,
+    .meta {
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.35;
+    }
+
+    .notice {
+      min-height: 24px;
+      margin: 0 0 12px;
+      color: var(--muted);
+    }
+
+    .notice.ok {
+      color: var(--ok);
+    }
+
+    .notice.warn {
+      color: var(--warn);
+    }
+
+    .notice.error {
+      color: var(--danger);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .section {
+      grid-column: span 6;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+
+    .section.wide {
+      grid-column: 1 / -1;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 148px minmax(0, 1fr);
+      gap: 8px 12px;
+      align-items: baseline;
+    }
+
+    .kv dt {
+      color: var(--muted);
+    }
+
+    .kv dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .mono {
+      font-family: var(--mono);
+    }
+
+    .rows {
+      display: grid;
+      gap: 8px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid #223044;
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .button-row,
+    .toggle-row,
+    .token-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .token-row input {
+      width: min(320px, 100%);
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid #304155;
+      border-radius: 8px;
+      background: #0b141f;
+      color: var(--ink);
+      user-select: none;
+    }
+
+    .generated-password {
+      display: none;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid rgba(249, 115, 22, 0.4);
+      border-radius: 8px;
+      background: rgba(249, 115, 22, 0.11);
+    }
+
+    .generated-password.visible {
+      display: grid;
+    }
+
+    @media (max-width: 820px) {
+      .topbar,
+      .section-head,
+      .form-row,
+      .row {
+        grid-template-columns: 1fr;
+        align-items: stretch;
+      }
+
+      .topbar {
+        display: grid;
+      }
+
+      .section {
+        grid-column: 1 / -1;
+      }
+
+      .kv {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>RustOp Admin</h1>
+        <div class="subtle" id="adminHost">Loading host state</div>
+      </div>
+      <div class="button-row">
+        <div class="token-row">
+          <input id="adminTokenInput" type="password" autocomplete="current-password" placeholder="Admin token">
+          <button id="saveAdminTokenBtn">Save Token</button>
+          <button id="clearAdminTokenBtn">Clear Token</button>
+        </div>
+        <button id="openClientBtn">Open Client</button>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+
+    <p class="notice" id="notice"></p>
+
+    <div class="grid">
+      <section class="section">
+        <div class="section-head">
+          <h2>Device</h2>
+          <span class="meta" id="passwordState">Password unknown</span>
+        </div>
+        <dl class="kv">
+          <dt>Label</dt>
+          <dd id="deviceLabel">-</dd>
+          <dt>Device code</dt>
+          <dd class="mono" id="deviceCode">-</dd>
+          <dt>OS</dt>
+          <dd id="deviceOs">-</dd>
+          <dt>Config</dt>
+          <dd class="mono" id="configPath">-</dd>
+        </dl>
+        <div class="form-row">
+          <label class="field">
+            <span>Device code</span>
+            <input id="deviceCodeInput" autocomplete="off" maxlength="32">
+          </label>
+          <button id="saveDeviceCodeBtn" class="primary">Save Code</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Access Password</h2>
+          <span class="meta">Minimum 12 characters</span>
+        </div>
+        <div class="form-row">
+          <label class="field">
+            <span>Set password</span>
+            <input id="accessPasswordInput" type="password" autocomplete="new-password">
+          </label>
+          <button id="savePasswordBtn" class="primary">Save Password</button>
+        </div>
+        <div class="button-row">
+          <button id="generatePasswordBtn">Generate Password</button>
+          <button id="clearPasswordBtn">Clear Password</button>
+        </div>
+        <div class="generated-password" id="generatedPasswordBox">
+          <div class="mono" id="generatedPasswordText"></div>
+          <button id="copyGeneratedPasswordBtn">Copy</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Pairing</h2>
+          <span class="meta" id="pairState">No active pair code</span>
+        </div>
+        <div class="row">
+          <div>
+            <strong class="mono" id="pairCode">-</strong>
+            <div class="meta" id="pairMeta">Generate a code when a browser needs approval.</div>
+          </div>
+          <button id="generatePairCodeBtn" class="primary">Generate Pair Code</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Remote Input</h2>
+          <span class="meta" id="elevatedState">-</span>
+        </div>
+        <div class="toggle-row">
+          <label class="toggle">
+            <input id="pointerToggle" type="checkbox">
+            <span>Pointer</span>
+          </label>
+          <label class="toggle">
+            <input id="keyboardToggle" type="checkbox">
+            <span>Keyboard</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Capture</h2>
+          <span class="meta" id="monitorState">-</span>
+        </div>
+        <label class="field">
+          <span>Monitor</span>
+          <select id="monitorSelect"></select>
+        </label>
+        <label class="field">
+          <span>Stream profile</span>
+          <select id="streamProfileSelect">
+            <option value="balanced">Balanced</option>
+            <option value="data_saver">Data Saver</option>
+            <option value="emergency">Emergency</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>Session</h2>
+          <span class="meta" id="sessionState">No active session</span>
+        </div>
+        <dl class="kv">
+          <dt>Data sent</dt>
+          <dd id="sessionBytes">-</dd>
+          <dt>Frames</dt>
+          <dd id="sessionFrames">-</dd>
+          <dt>User-Agent</dt>
+          <dd id="sessionUserAgent">-</dd>
+        </dl>
+        <div class="button-row">
+          <button id="disconnectSessionBtn">Disconnect Session</button>
+          <button id="clearTrustedBtn">Forget Trusted Browsers</button>
+        </div>
+      </section>
+
+      <section class="section wide">
+        <div class="section-head">
+          <h2>Host Actions</h2>
+          <span class="meta" id="trustedState">Trusted browsers: 0</span>
+        </div>
+        <div class="button-row">
+          <button id="tailscaleBtn">Enable Tailscale URL</button>
+          <button id="panicStopBtn" class="danger">Panic Stop</button>
+        </div>
+        <div class="rows" id="trustedRows"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const ADMIN_TOKEN_STORAGE_KEY = "rov_admin_token";
+
+    const state = {
+      status: null,
+      adminToken: "",
+      busy: false,
+      refreshTimer: 0
+    };
+
+    const elements = {
+      adminHost: document.getElementById("adminHost"),
+      notice: document.getElementById("notice"),
+      adminTokenInput: document.getElementById("adminTokenInput"),
+      saveAdminTokenBtn: document.getElementById("saveAdminTokenBtn"),
+      clearAdminTokenBtn: document.getElementById("clearAdminTokenBtn"),
+      openClientBtn: document.getElementById("openClientBtn"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      deviceLabel: document.getElementById("deviceLabel"),
+      deviceCode: document.getElementById("deviceCode"),
+      deviceOs: document.getElementById("deviceOs"),
+      configPath: document.getElementById("configPath"),
+      passwordState: document.getElementById("passwordState"),
+      deviceCodeInput: document.getElementById("deviceCodeInput"),
+      saveDeviceCodeBtn: document.getElementById("saveDeviceCodeBtn"),
+      accessPasswordInput: document.getElementById("accessPasswordInput"),
+      savePasswordBtn: document.getElementById("savePasswordBtn"),
+      generatePasswordBtn: document.getElementById("generatePasswordBtn"),
+      clearPasswordBtn: document.getElementById("clearPasswordBtn"),
+      generatedPasswordBox: document.getElementById("generatedPasswordBox"),
+      generatedPasswordText: document.getElementById("generatedPasswordText"),
+      copyGeneratedPasswordBtn: document.getElementById("copyGeneratedPasswordBtn"),
+      pairState: document.getElementById("pairState"),
+      pairCode: document.getElementById("pairCode"),
+      pairMeta: document.getElementById("pairMeta"),
+      generatePairCodeBtn: document.getElementById("generatePairCodeBtn"),
+      elevatedState: document.getElementById("elevatedState"),
+      pointerToggle: document.getElementById("pointerToggle"),
+      keyboardToggle: document.getElementById("keyboardToggle"),
+      monitorState: document.getElementById("monitorState"),
+      monitorSelect: document.getElementById("monitorSelect"),
+      streamProfileSelect: document.getElementById("streamProfileSelect"),
+      sessionState: document.getElementById("sessionState"),
+      sessionBytes: document.getElementById("sessionBytes"),
+      sessionFrames: document.getElementById("sessionFrames"),
+      sessionUserAgent: document.getElementById("sessionUserAgent"),
+      disconnectSessionBtn: document.getElementById("disconnectSessionBtn"),
+      clearTrustedBtn: document.getElementById("clearTrustedBtn"),
+      trustedState: document.getElementById("trustedState"),
+      trustedRows: document.getElementById("trustedRows"),
+      tailscaleBtn: document.getElementById("tailscaleBtn"),
+      panicStopBtn: document.getElementById("panicStopBtn")
+    };
+
+    boot();
+
+    function boot() {
+      state.adminToken = readStoredAdminToken();
+      captureAdminTokenFromUrl();
+      elements.adminTokenInput.value = state.adminToken;
+      bindControls();
+      refreshStatus();
+    }
+
+    function api(path) {
+      return new URL(path.replace(/^\/+/, ""), `${window.location.origin}/`).toString();
+    }
+
+    function readStoredAdminToken() {
+      try {
+        return window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
+      } catch {
+        return "";
+      }
+    }
+
+    function writeStoredAdminToken(token) {
+      try {
+        if (token) {
+          window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+        } else {
+          window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+        }
+      } catch {
+        // If session storage is unavailable, keep the token only in memory.
+      }
+    }
+
+    function captureAdminTokenFromUrl() {
+      const url = new URL(window.location.href);
+      const token = url.searchParams.get("token");
+      if (!token) {
+        return;
+      }
+      state.adminToken = token.trim();
+      writeStoredAdminToken(state.adminToken);
+      url.searchParams.delete("token");
+      const nextSearch = url.searchParams.toString();
+      window.history.replaceState({}, "", `${url.pathname}${nextSearch ? `?${nextSearch}` : ""}${url.hash}`);
+    }
+
+    function adminHeaders(extraHeaders = {}) {
+      const headers = { ...extraHeaders };
+      if (state.adminToken) {
+        headers["X-ROV-Admin-Token"] = state.adminToken;
+      }
+      return headers;
+    }
+
+    function bindControls() {
+      elements.saveAdminTokenBtn.addEventListener("click", saveAdminToken);
+      elements.clearAdminTokenBtn.addEventListener("click", clearAdminToken);
+      elements.openClientBtn.addEventListener("click", () => {
+        window.location.href = "/";
+      });
+      elements.refreshBtn.addEventListener("click", () => refreshStatus(true));
+      elements.saveDeviceCodeBtn.addEventListener("click", saveDeviceCode);
+      elements.savePasswordBtn.addEventListener("click", savePassword);
+      elements.generatePasswordBtn.addEventListener("click", generatePassword);
+      elements.clearPasswordBtn.addEventListener("click", () => postAction("api/admin/access-password/clear"));
+      elements.copyGeneratedPasswordBtn.addEventListener("click", copyGeneratedPassword);
+      elements.generatePairCodeBtn.addEventListener("click", generatePairCode);
+      elements.pointerToggle.addEventListener("change", () => updateRemoteInput({ pointer_enabled: elements.pointerToggle.checked }));
+      elements.keyboardToggle.addEventListener("change", () => updateRemoteInput({ keyboard_enabled: elements.keyboardToggle.checked }));
+      elements.monitorSelect.addEventListener("change", selectMonitor);
+      elements.streamProfileSelect.addEventListener("change", selectStreamProfile);
+      elements.disconnectSessionBtn.addEventListener("click", () => postAction("api/admin/session/disconnect"));
+      elements.clearTrustedBtn.addEventListener("click", () => postAction("api/admin/trusted-browsers/clear"));
+      elements.tailscaleBtn.addEventListener("click", () => postAction("api/admin/tailscale-url"));
+      elements.panicStopBtn.addEventListener("click", panicStop);
+      elements.deviceCodeInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          saveDeviceCode();
+        }
+      });
+      elements.accessPasswordInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          savePassword();
+        }
+      });
+      elements.adminTokenInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          saveAdminToken();
+        }
+      });
+    }
+
+    async function refreshStatus(manual = false) {
+      try {
+        const response = await fetch(api("api/admin/status"), {
+          cache: "no-store",
+          headers: adminHeaders()
+        });
+        if (!response.ok) {
+          throw new Error(await response.text() || `status ${response.status}`);
+        }
+        state.status = await response.json();
+        renderStatus();
+        if (manual) {
+          showNotice("Refreshed", "ok");
+        }
+      } catch (error) {
+        showNotice(error.message || "Failed to refresh admin state", "error");
+      } finally {
+        scheduleRefresh();
+      }
+    }
+
+    function scheduleRefresh() {
+      window.clearTimeout(state.refreshTimer);
+      state.refreshTimer = window.setTimeout(refreshStatus, 3000);
+    }
+
+    function renderStatus() {
+      const status = state.status;
+      if (!status) {
+        return;
+      }
+
+      elements.adminHost.textContent = `${status.device.display_name} | ${status.loopback_url}`;
+      if (status.admin_token_required && !state.adminToken) {
+        showNotice("Admin token required. Paste it above or open /admin?token=...", "warn");
+      }
+      elements.deviceLabel.textContent = status.device.display_name || "-";
+      elements.deviceCode.textContent = status.device.device_code || "-";
+      elements.deviceOs.textContent = status.device.os || status.device.os_family || "-";
+      elements.configPath.textContent = status.config_path || "-";
+      elements.passwordState.textContent = status.device.password_enabled ? "Password configured" : "Password disabled";
+      if (document.activeElement !== elements.deviceCodeInput) {
+        elements.deviceCodeInput.value = status.device.device_code || "";
+      }
+
+      if (status.pair_code) {
+        elements.pairState.textContent = `Expires in ${formatDuration(status.pair_code.expires_in_seconds)}`;
+        elements.pairCode.textContent = status.pair_code.code;
+        elements.pairMeta.textContent = `${status.pair_code.remaining_attempts} attempt(s) left`;
+      } else {
+        elements.pairState.textContent = "No active pair code";
+        elements.pairCode.textContent = "-";
+        elements.pairMeta.textContent = "Generate a code when a browser needs approval.";
+      }
+
+      elements.elevatedState.textContent = status.host_elevated ? "Elevated: input locked" : "Normal privileges";
+      elements.pointerToggle.checked = !!status.remote_pointer_requested;
+      elements.keyboardToggle.checked = !!status.remote_keyboard_requested;
+      elements.pointerToggle.disabled = !!status.host_elevated;
+      elements.keyboardToggle.disabled = !!status.host_elevated;
+
+      renderMonitors(status);
+      elements.streamProfileSelect.value = status.stream_profile || "balanced";
+
+      if (status.session) {
+        elements.sessionState.textContent = `Expires in ${formatDuration(status.session.expires_in_seconds)}`;
+        elements.sessionBytes.textContent = formatBytes(status.session.bytes_sent);
+        elements.sessionFrames.textContent = `${status.session.frame_responses} sent, ${status.session.cached_frame_hits} cached`;
+        elements.sessionUserAgent.textContent = status.remote_user_agent || "-";
+      } else {
+        elements.sessionState.textContent = "No active session";
+        elements.sessionBytes.textContent = "-";
+        elements.sessionFrames.textContent = "-";
+        elements.sessionUserAgent.textContent = "-";
+      }
+
+      elements.trustedState.textContent = `Trusted browsers: ${status.trusted_browsers.length}`;
+      renderTrustedBrowsers(status.trusted_browsers);
+    }
+
+    function renderMonitors(status) {
+      const previous = elements.monitorSelect.value;
+      elements.monitorSelect.textContent = "";
+      for (const monitor of status.monitors) {
+        const option = document.createElement("option");
+        option.value = String(monitor.id);
+        option.textContent = `${monitor.name}${monitor.is_primary ? " (primary)" : ""} - ${monitor.width}x${monitor.height}`;
+        elements.monitorSelect.appendChild(option);
+      }
+      const selected = status.selected_monitor_id ?? previous;
+      elements.monitorSelect.value = selected === null || selected === undefined ? "" : String(selected);
+      elements.monitorSelect.disabled = status.monitors.length === 0;
+      elements.monitorState.textContent = status.monitors.length ? `${status.monitors.length} display(s)` : "No displays";
+    }
+
+    function renderTrustedBrowsers(browsers) {
+      elements.trustedRows.textContent = "";
+      if (!browsers.length) {
+        const empty = document.createElement("div");
+        empty.className = "meta";
+        empty.textContent = "No trusted browsers remembered.";
+        elements.trustedRows.appendChild(empty);
+        return;
+      }
+
+      for (const browser of browsers.slice(0, 6)) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const main = document.createElement("div");
+        main.innerHTML = `<strong>${escapeHtml(browser.label)}</strong><div class="meta mono">${escapeHtml(browser.id)}</div>`;
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `seen ${formatDuration(browser.last_seen_ago_seconds)} ago`;
+        row.append(main, meta);
+        elements.trustedRows.appendChild(row);
+      }
+    }
+
+    async function saveDeviceCode() {
+      const deviceCode = elements.deviceCodeInput.value.trim();
+      if (!deviceCode) {
+        showNotice("Enter a device code", "warn");
+        return;
+      }
+      await postAction("api/admin/device-code", { device_code: deviceCode });
+    }
+
+    function saveAdminToken() {
+      state.adminToken = elements.adminTokenInput.value.trim();
+      writeStoredAdminToken(state.adminToken);
+      showNotice(state.adminToken ? "Admin token saved for this tab" : "Admin token cleared", "ok");
+      refreshStatus(true);
+    }
+
+    function clearAdminToken() {
+      state.adminToken = "";
+      elements.adminTokenInput.value = "";
+      writeStoredAdminToken("");
+      showNotice("Admin token cleared", "ok");
+      refreshStatus(true);
+    }
+
+    async function savePassword() {
+      const password = elements.accessPasswordInput.value;
+      if (!password) {
+        showNotice("Enter a password", "warn");
+        return;
+      }
+      await postAction("api/admin/access-password", { password });
+      elements.accessPasswordInput.value = "";
+      hideGeneratedPassword();
+    }
+
+    async function generatePassword() {
+      const result = await postAction("api/admin/access-password/generate", null, { refresh: true });
+      if (!result?.password) {
+        return;
+      }
+      elements.generatedPasswordText.textContent = result.password;
+      elements.generatedPasswordBox.classList.add("visible");
+    }
+
+    async function copyGeneratedPassword() {
+      const password = elements.generatedPasswordText.textContent.trim();
+      if (!password) {
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(password);
+        showNotice("Password copied", "ok");
+      } catch {
+        showNotice("Clipboard copy failed", "warn");
+      }
+    }
+
+    async function generatePairCode() {
+      const result = await postAction("api/admin/pair-code", null, { refresh: true });
+      if (result?.code) {
+        showNotice(`Pair code ${result.code} generated`, "ok");
+      }
+    }
+
+    async function updateRemoteInput(body) {
+      await postAction("api/admin/remote-input", body);
+    }
+
+    async function selectMonitor() {
+      const monitorId = Number(elements.monitorSelect.value);
+      if (!Number.isFinite(monitorId)) {
+        return;
+      }
+      await postAction("api/admin/monitor", { monitor_id: monitorId });
+    }
+
+    async function selectStreamProfile() {
+      await postAction("api/admin/stream-profile", { profile: elements.streamProfileSelect.value });
+    }
+
+    async function panicStop() {
+      if (!window.confirm("Panic stop clears sessions, trusted browsers, pair codes, access password, and disables input.")) {
+        return;
+      }
+      hideGeneratedPassword();
+      await postAction("api/admin/panic-stop");
+    }
+
+    async function postAction(path, body = null, options = {}) {
+      if (state.busy) {
+        return null;
+      }
+      state.busy = true;
+      setButtonsDisabled(true);
+      try {
+        const response = await fetch(api(path), {
+          method: "POST",
+          cache: "no-store",
+          headers: adminHeaders(body ? { "Content-Type": "application/json" } : {}),
+          body: body ? JSON.stringify(body) : undefined
+        });
+        const text = await response.text();
+        let payload = null;
+        if (text) {
+          try {
+            payload = JSON.parse(text);
+          } catch {
+            payload = { message: text };
+          }
+        }
+        if (!response.ok) {
+          throw new Error(payload?.message || text || `request failed with status ${response.status}`);
+        }
+        showNotice(payload?.message || "Updated", "ok");
+        if (options.refresh !== false) {
+          await refreshStatus();
+        }
+        return payload;
+      } catch (error) {
+        showNotice(error.message || "Request failed", "error");
+        await refreshStatus();
+        return null;
+      } finally {
+        state.busy = false;
+        setButtonsDisabled(false);
+      }
+    }
+
+    function setButtonsDisabled(disabled) {
+      document.querySelectorAll("button").forEach((button) => {
+        button.disabled = disabled;
+      });
+      if (state.status?.host_elevated) {
+        elements.pointerToggle.disabled = true;
+        elements.keyboardToggle.disabled = true;
+      }
+    }
+
+    function hideGeneratedPassword() {
+      elements.generatedPasswordText.textContent = "";
+      elements.generatedPasswordBox.classList.remove("visible");
+    }
+
+    function showNotice(message, kind = "") {
+      elements.notice.textContent = message;
+      elements.notice.className = `notice ${kind}`.trim();
+    }
+
+    function formatDuration(seconds) {
+      const value = Math.max(0, Number(seconds) || 0);
+      const days = Math.floor(value / 86400);
+      const hours = Math.floor((value % 86400) / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      const secs = Math.floor(value % 60);
+      if (days) {
+        return `${days}d ${hours}h`;
+      }
+      if (hours) {
+        return `${hours}h ${minutes}m`;
+      }
+      if (minutes) {
+        return `${minutes}m ${secs}s`;
+      }
+      return `${secs}s`;
+    }
+
+    function formatBytes(bytes) {
+      const value = Number(bytes) || 0;
+      if (value >= 1024 * 1024) {
+        return `${(value / 1024 / 1024).toFixed(1)} MiB`;
+      }
+      if (value >= 1024) {
+        return `${(value / 1024).toFixed(1)} KiB`;
+      }
+      return `${value} B`;
+    }
+
+    function escapeHtml(value) {
+      return `${value || ""}`.replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      })[character]);
+    }
+  </script>
+</body>
+</html>
