@@ -23,12 +23,13 @@ use crate::{
     capture,
     config::StreamProfile,
     network::{self, RemoteAccessMode, UrlSet},
+    security,
     state::AppState,
 };
 
 const NETWORK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TOAST_TTL: Duration = Duration::from_secs(4);
-const ACTIONS: [ActionId; 12] = [
+const ACTIONS: [ActionId; 14] = [
     ActionId::RefreshNetwork,
     ActionId::RefreshDisplays,
     ActionId::TailscaleUrl,
@@ -37,6 +38,8 @@ const ACTIONS: [ActionId; 12] = [
     ActionId::TogglePointer,
     ActionId::ToggleKeyboard,
     ActionId::GeneratePairingCode,
+    ActionId::GenerateAccessPassword,
+    ActionId::ClearAccessPassword,
     ActionId::DisconnectSession,
     ActionId::ForgetTrustedBrowsers,
     ActionId::PanicStop,
@@ -123,6 +126,7 @@ struct HostTui {
     urls: UrlSet,
     selected_action: usize,
     last_network_refresh: Instant,
+    last_generated_access_password: Option<String>,
     toast: Option<Toast>,
 }
 
@@ -136,6 +140,8 @@ enum ActionId {
     TogglePointer,
     ToggleKeyboard,
     GeneratePairingCode,
+    GenerateAccessPassword,
+    ClearAccessPassword,
     DisconnectSession,
     ForgetTrustedBrowsers,
     PanicStop,
@@ -149,6 +155,7 @@ impl HostTui {
             state,
             selected_action: 0,
             last_network_refresh: Instant::now(),
+            last_generated_access_password: None,
             toast: None,
         }
     }
@@ -320,12 +327,19 @@ impl HostTui {
             .capture_error()
             .map(|error| format!("Capture issue: {error}"))
             .unwrap_or_else(|| "Capture loop healthy".to_string());
+        let device = self.state.device_info_response();
 
         Paragraph::new(Text::from(vec![
             Line::from(format!(
                 "Port: {}   Elevated: {}",
                 self.state.port(),
                 yes_no(self.state.is_elevated())
+            )),
+            Line::from(format!(
+                "Device: {}   Code: {}   OS: {}",
+                device.display_name,
+                self.state.device_code(),
+                device.os
             )),
             Line::from(format!("Monitor: {monitor_summary}")),
             Line::from(format!(
@@ -354,6 +368,10 @@ impl HostTui {
             Line::from(format!(
                 "Loopback ({}): {}",
                 self.urls.loopback.label, self.urls.loopback.url
+            )),
+            Line::from(format!(
+                "Local admin: http://127.0.0.1:{}/admin",
+                self.state.port()
             )),
         ];
 
@@ -428,7 +446,19 @@ impl HostTui {
         let mut lines = vec![
             Line::from(format!("Pointer scope: {pointer_state}")),
             Line::from(format!("Keyboard scope: {keyboard_state}")),
+            Line::from(format!(
+                "Unattended password: {}",
+                if self.state.access_password_configured() {
+                    "configured"
+                } else {
+                    "disabled"
+                }
+            )),
         ];
+
+        if let Some(password) = self.last_generated_access_password.as_deref() {
+            lines.push(Line::from(format!("New access password: {password}")));
+        }
 
         if let Some(code) = self.state.current_pair_code() {
             lines.push(Line::from(format!(
@@ -528,6 +558,23 @@ impl HostTui {
                 let snapshot = self.state.generate_pair_code();
                 self.set_toast(format!("Pairing code {} is ready", snapshot.code));
             }
+            ActionId::GenerateAccessPassword => {
+                let password = security::generate_access_password();
+                match self.state.set_access_password(&password) {
+                    Ok(()) => {
+                        self.last_generated_access_password = Some(password.clone());
+                        self.set_toast(format!("Access password generated: {password}"));
+                    }
+                    Err(err) => self.set_toast(format!("Access password update failed: {err}")),
+                }
+            }
+            ActionId::ClearAccessPassword => match self.state.clear_access_password() {
+                Ok(()) => {
+                    self.last_generated_access_password = None;
+                    self.set_toast("Unattended password login disabled");
+                }
+                Err(err) => self.set_toast(format!("Access password cleanup failed: {err}")),
+            },
             ActionId::DisconnectSession => {
                 if self.state.current_remote_session().is_some() {
                     self.state.revoke_remote_session();
@@ -538,14 +585,15 @@ impl HostTui {
             }
             ActionId::ForgetTrustedBrowsers => match self.state.revoke_trusted_browsers() {
                 Ok(0) => self.set_toast("No trusted browsers were remembered"),
-                Ok(count) => {
-                    self.set_toast(format!("Forgot {count} trusted browser(s) and cleared the current session"))
-                }
+                Ok(count) => self.set_toast(format!(
+                    "Forgot {count} trusted browser(s) and cleared the current session"
+                )),
                 Err(err) => self.set_toast(format!("Trusted browser cleanup failed: {err}")),
             },
             ActionId::PanicStop => match self.state.panic_stop() {
                 Ok(()) => {
-                    self.set_toast("Remote input disabled and every pairing, session, and trusted browser was cleared")
+                    self.last_generated_access_password = None;
+                    self.set_toast("Remote input disabled and every pairing, session, trusted browser, and access password was cleared")
                 }
                 Err(err) => self.set_toast(format!("Panic stop failed: {err}")),
             },
@@ -715,6 +763,14 @@ impl HostTui {
                 }
             ),
             ActionId::GeneratePairingCode => "Generate pairing code".to_string(),
+            ActionId::GenerateAccessPassword => {
+                if self.state.access_password_configured() {
+                    "Replace access password".to_string()
+                } else {
+                    "Generate access password".to_string()
+                }
+            }
+            ActionId::ClearAccessPassword => "Disable access password".to_string(),
             ActionId::DisconnectSession => "Disconnect remote session".to_string(),
             ActionId::ForgetTrustedBrowsers => format!(
                 "Forget trusted browsers ({})",
@@ -751,6 +807,12 @@ impl HostTui {
             ActionId::GeneratePairingCode => {
                 "Create a fresh one-time pairing code for the next browser session."
             }
+            ActionId::GenerateAccessPassword => {
+                "Generate and store a long unattended password; it is shown in the security panel until replaced or the app exits."
+            }
+            ActionId::ClearAccessPassword => {
+                "Disable unattended password login. Remembered browsers can still be revoked separately."
+            }
             ActionId::DisconnectSession => {
                 "Disconnect the currently approved browser session without changing input scopes."
             }
@@ -758,7 +820,7 @@ impl HostTui {
                 "Revoke every remembered browser and clear the active remote session."
             }
             ActionId::PanicStop => {
-                "Immediately disable remote input and clear the pairing code, active session, and every remembered browser."
+                "Immediately disable remote input and clear the pairing code, active session, access password, and every remembered browser."
             }
             ActionId::Quit => "Exit the host TUI and stop the host process.",
         }

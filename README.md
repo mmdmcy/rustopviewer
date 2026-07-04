@@ -7,7 +7,10 @@ ROV currently ships as:
 - A cross-platform host TUI for Linux and Windows
 - A built-in browser client served by the host itself
 - A host-approved pairing flow that exchanges one-time codes for short-lived sessions
+- Optional unattended login with a custom device code and long access password
 - Optional remembered-browser trust for devices you approve once and revisit later
+- A browser dashboard for the current host and previously connected devices
+- A loopback-only browser admin page for host settings and session controls
 - Loopback-first network exposure with optional Tailscale URL discovery
 - Reverse-proxy-friendly browser paths for subpath or hostname-based publishing
 - In-terminal readiness checks for local and private-browser access paths
@@ -68,7 +71,11 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Touch zoom and panning on mobile browsers
 - Fit-to-window scaling with manual zoom in and out from the browser
 - Pair-approved control that automatically restores pointer and keyboard unless the host is elevated, with host-side toggles for view-only when desired
+- Host identity metadata with a custom device code, OS label, and `username@hostname` dashboard label
+- Optional unattended password login that can remember the browser without storing the password in browser storage
 - Remembered browsers can automatically refresh their short-lived session after host restarts or daily session expiry
+- Browser dashboard entries for devices previously connected from the same browser origin
+- Local browser admin at `/admin` for device code, access password, pair codes, input scopes, stream profile, monitor selection, session cleanup, Tailscale URL setup, and panic stop
 - Loopback plus optional Tailscale-tailnet host listeners
 - Relative browser API paths so the client can sit behind a stripped reverse-proxy prefix
 - Browser-side session recovery that keeps same-origin API calls working through stricter reverse proxies
@@ -83,6 +90,7 @@ Notable current limitations:
 - The host session must already be awake and unlocked
 - Remote input is intentionally locked out while ROV runs elevated
 - Remembered access still depends on the browser retaining its local session storage and the host not revoking that device
+- The device dashboard is browser/origin-local; there is no central device directory yet
 - No audio streaming
 - No clipboard sync
 - No file transfer
@@ -127,7 +135,13 @@ Then open the best local URL shown in the host TUI. The default one is usually:
 http://127.0.0.1:45080/
 ```
 
-For unattended deployments after you have already approved at least one trusted browser:
+For host settings and session controls from the same machine, open:
+
+```text
+http://127.0.0.1:45080/admin
+```
+
+For unattended deployments after you have configured an access password or already approved at least one trusted browser:
 
 ```bash
 cargo run --release -- --headless
@@ -145,13 +159,47 @@ To issue one one-time pairing code at startup without opening the TUI:
 cargo run --release -- --headless --print-pair-code
 ```
 
+To set a stable device code and unattended access password before launching the host:
+
+```bash
+cargo run --release -- --set-device-code WORKSTATION-01
+cargo run --release -- --set-access-password "use-a-long-unique-password-here"
+cargo run --release -- --print-device
+```
+
+You can also generate a random long access password from the host TUI. It is stored hashed in the app config and shown in the TUI security panel until you replace it or exit.
+
+### Optional: one-command `.env` bootstrap
+
+For a local private checkout, create `.private/rustopviewer.env` from `.env.example` and set:
+
+```text
+ROV_DEVICE_CODE=WORKSTATION-01
+ROV_ACCESS_PASSWORD=use-a-long-unique-password-here
+ROV_ADMIN_TOKEN=use-a-different-long-random-admin-token
+```
+
+Then one normal launch is enough:
+
+```bash
+cargo run --release -- --headless
+```
+
+At startup, ROV reads `.private/rustopviewer.env` first, falls back to `.env` for older local checkouts, applies the device code and access password to the user config, and uses `ROV_ADMIN_TOKEN` to protect loopback `/api/admin/*` calls. Open the admin UI with:
+
+```text
+http://127.0.0.1:45080/admin?token=use-a-different-long-random-admin-token
+```
+
+The page stores that admin token only in browser session storage and removes it from the address bar. Keep `.private/rustopviewer.env` and `.env` out of git and treat `ROV_ACCESS_PASSWORD` and `ROV_ADMIN_TOKEN` as real secrets.
+
 On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
 
 ### First local browser session
 
 1. Launch ROV on the host machine.
 2. Open the best available URL shown in the host TUI, typically `http://127.0.0.1:45080/`.
-3. Generate a one-time pairing code in the host TUI and enter it in the browser page.
+3. Use the browser dashboard to connect with the configured device code and unattended password, or generate a one-time pairing code in the host TUI and enter it in the browser page.
 4. Leave **Remember this browser on this device** enabled if you want that browser to reconnect later without another code.
 5. Use the remote page to control the desktop.
 
@@ -167,16 +215,24 @@ Mobile browsers:
 - Keep the on-screen keyboard, tool sheet, and touch control buttons.
 - Use touch panning and pinch gestures inside the frame viewer.
 
-### Optional: headless runtime after first approval
+### Optional: headless runtime with remembered access
 
-If you want ROV to stay available without a terminal window after you have already approved a browser on that device:
+If you want ROV to stay available without a terminal window, either configure an unattended access password before launch or approve a browser once from the host TUI.
+
+Password-based path:
+
+1. Set a device code and long access password with `--set-device-code` and `--set-access-password`.
+2. Launch `rustopviewer --headless`.
+3. Open the host URL and connect from the browser dashboard.
+
+Pair-code path:
 
 1. Start ROV normally once and pair a browser with **Remember this browser on this device** enabled.
 2. Stop the TUI.
 3. Launch `rustopviewer --headless`.
 4. Revisit from the remembered browser and let it restore a fresh short-lived session automatically.
 
-Headless mode is meant for already approved browsers. A brand-new browser still needs a host-generated one-time pairing code first.
+A brand-new browser without the unattended password still needs a host-generated one-time pairing code first.
 If you are deliberately launching headless for that first approval, either start it with `--print-pair-code` so the host logs one code at startup, or launch it normally and use `rustopviewer --generate-pair-code` later without interrupting the running service.
 
 ## Optional Deployment Paths

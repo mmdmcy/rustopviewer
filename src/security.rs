@@ -8,10 +8,15 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::config::{AccessPasswordConfig, normalize_device_code};
+
 pub const SESSION_COOKIE_NAME: &str = "rov_session";
 pub const TRUSTED_BROWSER_COOKIE_NAME: &str = "rov_trusted";
 pub const MAX_PAIR_ATTEMPTS: u8 = 5;
+pub const MAX_ACCESS_PASSWORD_ATTEMPTS: u8 = 6;
 pub const MAX_INPUTS_PER_SECOND: u16 = 90;
+pub const ACCESS_PASSWORD_MIN_LEN: usize = 12;
+pub const ACCESS_PASSWORD_LOCKOUT: Duration = Duration::from_secs(60);
 pub const PAIR_CODE_TTL: Duration = Duration::from_secs(10 * 60);
 pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 pub const TRUSTED_BROWSER_MAX_LIFETIME: Duration = Duration::from_secs(5 * 365 * 24 * 60 * 60);
@@ -87,6 +92,61 @@ impl From<PairingError> for IssuePairingError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessPasswordConfigError {
+    TooShort,
+}
+
+impl fmt::Display for AccessPasswordConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AccessPasswordConfigError::TooShort => write!(
+                f,
+                "access passwords must be at least {ACCESS_PASSWORD_MIN_LEN} characters"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessPasswordError {
+    MissingDeviceCode,
+    MissingPassword,
+    PasswordNotConfigured,
+    InvalidCredentials,
+    TooManyAttempts,
+}
+
+impl fmt::Display for AccessPasswordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AccessPasswordError::MissingDeviceCode => f.write_str("enter this host's device code"),
+            AccessPasswordError::MissingPassword => f.write_str("enter the unattended password"),
+            AccessPasswordError::PasswordNotConfigured => {
+                f.write_str("this host does not have an unattended password configured")
+            }
+            AccessPasswordError::InvalidCredentials => {
+                f.write_str("the device code or unattended password was not correct")
+            }
+            AccessPasswordError::TooManyAttempts => {
+                f.write_str("too many wrong password attempts; wait a minute and try again")
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum IssueAccessPasswordError {
+    Access(AccessPasswordError),
+    Storage,
+}
+
+impl From<AccessPasswordError> for IssueAccessPasswordError {
+    fn from(value: AccessPasswordError) -> Self {
+        Self::Access(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAuthError {
     Missing,
     Invalid,
@@ -156,6 +216,7 @@ impl TrustedBrowserStore {
 pub struct SessionStore {
     pair_code: Option<PairCode>,
     session: Option<RemoteSession>,
+    access_password_attempts: PasswordAttemptWindow,
     trusted_browser_store: TrustedBrowserStore,
     trusted_browsers: Vec<TrustedBrowserRecord>,
 }
@@ -166,6 +227,7 @@ impl SessionStore {
         Ok(Self {
             pair_code: None,
             session: None,
+            access_password_attempts: PasswordAttemptWindow::default(),
             trusted_browser_store,
             trusted_browsers,
         })
@@ -282,6 +344,63 @@ impl SessionStore {
         }
 
         self.pair_code = None;
+        let session = RemoteSession::issue(now, user_agent);
+        let session_id = session.id.clone();
+        self.session = Some(session);
+        Ok(SessionGrant {
+            session_id,
+            trusted_browser_token,
+        })
+    }
+
+    pub fn issue_access_password_session(
+        &mut self,
+        candidate_device_code: &str,
+        expected_device_code: &str,
+        candidate_password: &str,
+        password_config: Option<&AccessPasswordConfig>,
+        user_agent: Option<String>,
+        remember_browser: bool,
+    ) -> Result<SessionGrant, IssueAccessPasswordError> {
+        let now = SystemTime::now();
+        if self.access_password_attempts.is_locked(now) {
+            return Err(AccessPasswordError::TooManyAttempts.into());
+        }
+
+        let candidate_device_code = normalize_device_code(candidate_device_code)
+            .ok_or(AccessPasswordError::MissingDeviceCode)?;
+        let expected_device_code = normalize_device_code(expected_device_code)
+            .ok_or(AccessPasswordError::InvalidCredentials)?;
+        let password_config = password_config.ok_or(AccessPasswordError::PasswordNotConfigured)?;
+
+        if candidate_password.trim().is_empty() {
+            return Err(AccessPasswordError::MissingPassword.into());
+        }
+
+        if !constant_time_eq(&candidate_device_code, &expected_device_code)
+            || !verify_access_password(password_config, candidate_password)
+        {
+            self.access_password_attempts.record_failure(now);
+            return Err(if self.access_password_attempts.is_locked(now) {
+                AccessPasswordError::TooManyAttempts.into()
+            } else {
+                AccessPasswordError::InvalidCredentials.into()
+            });
+        }
+
+        self.access_password_attempts.clear();
+        let user_agent = normalize_user_agent(user_agent);
+        let mut trusted_browser_token = None;
+        if remember_browser {
+            let (browser, token) = TrustedBrowserRecord::issue(now, user_agent.clone());
+            self.trusted_browsers.push(browser);
+            if self.persist_trusted_browsers().is_err() {
+                self.trusted_browsers.pop();
+                return Err(IssueAccessPasswordError::Storage);
+            }
+            trusted_browser_token = Some(token);
+        }
+
         let session = RemoteSession::issue(now, user_agent);
         let session_id = session.id.clone();
         self.session = Some(session);
@@ -453,6 +572,38 @@ impl PairCode {
     }
 }
 
+#[derive(Clone, Default)]
+struct PasswordAttemptWindow {
+    started_at: Option<SystemTime>,
+    failures: u8,
+}
+
+impl PasswordAttemptWindow {
+    fn record_failure(&mut self, now: SystemTime) {
+        if self
+            .started_at
+            .is_none_or(|started_at| elapsed_since(started_at, now) >= ACCESS_PASSWORD_LOCKOUT)
+        {
+            self.started_at = Some(now);
+            self.failures = 0;
+        }
+
+        self.failures = self.failures.saturating_add(1);
+    }
+
+    fn is_locked(&self, now: SystemTime) -> bool {
+        self.failures >= MAX_ACCESS_PASSWORD_ATTEMPTS
+            && self
+                .started_at
+                .is_some_and(|started_at| elapsed_since(started_at, now) < ACCESS_PASSWORD_LOCKOUT)
+    }
+
+    fn clear(&mut self) {
+        self.started_at = None;
+        self.failures = 0;
+    }
+}
+
 #[derive(Clone)]
 struct TrustedBrowserRecord {
     id: String,
@@ -581,6 +732,53 @@ fn generate_pair_code() -> String {
         .collect()
 }
 
+pub fn generate_access_password() -> String {
+    Alphanumeric.sample_string(&mut rand::rng(), 24)
+}
+
+pub fn access_password_config_from_plaintext(
+    password: &str,
+) -> Result<AccessPasswordConfig, AccessPasswordConfigError> {
+    let password = password.trim();
+    if password.chars().count() < ACCESS_PASSWORD_MIN_LEN {
+        return Err(AccessPasswordConfigError::TooShort);
+    }
+
+    let salt = Alphanumeric.sample_string(&mut rand::rng(), 32);
+    Ok(AccessPasswordConfig {
+        password_hash: hash_access_password(&salt, password),
+        salt,
+    })
+}
+
+fn verify_access_password(config: &AccessPasswordConfig, password: &str) -> bool {
+    let candidate_hash = hash_access_password(&config.salt, password.trim());
+    constant_time_eq(&config.password_hash, &candidate_hash)
+}
+
+pub fn access_password_matches_config(config: &AccessPasswordConfig, password: &str) -> bool {
+    verify_access_password(config, password)
+}
+
+fn hash_access_password(salt: &str, password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update(b":");
+    hasher.update(password.as_bytes());
+    let digest = hasher.finalize();
+    format!("{digest:x}")
+}
+
+pub fn hash_admin_token(token: &str) -> String {
+    let digest = Sha256::digest(token.trim().as_bytes());
+    format!("{digest:x}")
+}
+
+pub fn admin_token_matches_hash(token_hash: &str, token: &str) -> bool {
+    let candidate_hash = hash_admin_token(token);
+    constant_time_eq(token_hash, &candidate_hash)
+}
+
 fn trusted_browser_label(id: &str, user_agent: Option<&str>) -> String {
     if let Some(user_agent) = user_agent {
         let trimmed = user_agent.trim();
@@ -652,8 +850,9 @@ fn unix_to_system_time(seconds: u64) -> SystemTime {
 #[cfg(test)]
 mod session_tests {
     use super::{
-        MAX_PAIR_ATTEMPTS, RemoteSession, SESSION_MAX_LIFETIME, SessionStore,
-        TrustedBrowserAuthError, TrustedBrowserStore,
+        MAX_ACCESS_PASSWORD_ATTEMPTS, MAX_PAIR_ATTEMPTS, RemoteSession, SESSION_MAX_LIFETIME,
+        SessionStore, TrustedBrowserAuthError, TrustedBrowserStore,
+        access_password_config_from_plaintext,
     };
     use std::{
         fs,
@@ -803,6 +1002,88 @@ mod session_tests {
             super::IssuePairingError::Pairing(super::PairingError::TooManyAttempts)
         ));
         assert!(sessions.pair_code_snapshot().is_none());
+
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn access_password_session_can_be_remembered_and_restored() {
+        let path = temp_store_path("password");
+        let password_config = access_password_config_from_plaintext("sample unattended password")
+            .expect("password config should hash");
+        let store = TrustedBrowserStore::new(path.clone()).expect("store should initialize");
+        let mut sessions = SessionStore::new(store).expect("session store should initialize");
+        let grant = sessions
+            .issue_access_password_session(
+                "HOST-01",
+                "HOST-01",
+                "sample unattended password",
+                Some(&password_config),
+                Some("TestBrowser/1.0".to_string()),
+                true,
+            )
+            .expect("password login should issue a session");
+        let trusted_token = grant
+            .trusted_browser_token
+            .expect("password login should remember the browser");
+
+        let store = TrustedBrowserStore::new(path.clone()).expect("store should reopen");
+        let mut restarted = SessionStore::new(store).expect("session store should reload");
+        let restored = restarted
+            .restore_trusted_browser_session(&trusted_token, Some("TestBrowser/1.0".to_string()))
+            .expect("trusted browser should restore after password login");
+
+        assert!(!restored.session_id.is_empty());
+        assert_eq!(restarted.trusted_browser_count(), 1);
+
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn access_password_attempts_lock_after_repeated_failures() {
+        let path = temp_store_path("password-lock");
+        let password_config = access_password_config_from_plaintext("sample unattended password")
+            .expect("password config should hash");
+        let store = TrustedBrowserStore::new(path.clone()).expect("store should initialize");
+        let mut sessions = SessionStore::new(store).expect("session store should initialize");
+
+        for _ in 0..MAX_ACCESS_PASSWORD_ATTEMPTS - 1 {
+            let error = sessions
+                .issue_access_password_session(
+                    "HOST-01",
+                    "HOST-01",
+                    "wrong password",
+                    Some(&password_config),
+                    None,
+                    false,
+                )
+                .expect_err("wrong password should fail");
+            assert!(matches!(
+                error,
+                super::IssueAccessPasswordError::Access(
+                    super::AccessPasswordError::InvalidCredentials
+                )
+            ));
+        }
+
+        let error = sessions
+            .issue_access_password_session(
+                "HOST-01",
+                "HOST-01",
+                "wrong password",
+                Some(&password_config),
+                None,
+                false,
+            )
+            .expect_err("too many wrong passwords should lock login");
+        assert!(matches!(
+            error,
+            super::IssueAccessPasswordError::Access(super::AccessPasswordError::TooManyAttempts)
+        ));
 
         if let Some(parent) = path.parent() {
             let _ = fs::remove_dir_all(parent);

@@ -327,18 +327,18 @@ mod tests {
                 "BackendState": "Running",
                 "AuthURL": "",
                 "CertDomains": [
-                    "sparta.tail359cf9.ts.net"
+                    "workstation.example.ts.net"
                 ],
                 "Self": {
-                    "HostName": "Sparta",
-                    "DNSName": "sparta.tail359cf9.ts.net.",
+                    "HostName": "Workstation",
+                    "DNSName": "workstation.example.ts.net.",
                     "TailscaleIPs": [
                         "100.124.204.65",
                         "fd7a:115c:a1e0::3401:cca0"
                     ]
                 },
                 "CurrentTailnet": {
-                    "Name": "katteke727@gmail.com",
+                    "Name": "example-tailnet",
                     "MagicDNSEnabled": true
                 }
             }"#,
@@ -350,9 +350,12 @@ mod tests {
         assert!(!status.needs_login);
         assert!(status.magic_dns_enabled);
         assert!(status.https_certificates_available);
-        assert_eq!(status.host_name.as_deref(), Some("Sparta"));
-        assert_eq!(status.dns_name.as_deref(), Some("sparta.tail359cf9.ts.net"));
-        assert_eq!(status.tailnet_name.as_deref(), Some("katteke727@gmail.com"));
+        assert_eq!(status.host_name.as_deref(), Some("Workstation"));
+        assert_eq!(
+            status.dns_name.as_deref(),
+            Some("workstation.example.ts.net")
+        );
+        assert_eq!(status.tailnet_name.as_deref(), Some("example-tailnet"));
         assert_eq!(status.tailscale_ips, vec![Ipv4Addr::new(100, 124, 204, 65)]);
     }
 
@@ -364,15 +367,15 @@ mod tests {
                 "AuthURL": "",
                 "CertDomains": null,
                 "Self": {
-                    "HostName": "Sparta",
-                    "DNSName": "sparta.tail359cf9.ts.net.",
+                    "HostName": "Workstation",
+                    "DNSName": "workstation.example.ts.net.",
                     "TailscaleIPs": [
                         "100.124.204.65",
                         "fd7a:115c:a1e0::3401:cca0"
                     ]
                 },
                 "CurrentTailnet": {
-                    "Name": "katteke727@gmail.com",
+                    "Name": "example-tailnet",
                     "MagicDNSEnabled": true
                 }
             }"#,
@@ -394,13 +397,13 @@ mod tests {
         assert!(empty.https_url.is_none());
 
         let active = parse_tailscale_serve_status(
-            br#"http://sparta:45080 (tailnet only)
-http://sparta.tail359cf9.ts.net:45080 (tailnet only)
+            br#"http://workstation:45080 (tailnet only)
+http://workstation.example.ts.net:45080 (tailnet only)
 |-- / proxy http://127.0.0.1:45080"#,
         );
         assert_eq!(
             active.http_url.as_deref(),
-            Some("http://sparta.tail359cf9.ts.net:45080")
+            Some("http://workstation.example.ts.net:45080")
         );
     }
 
@@ -435,7 +438,7 @@ http://sparta.tail359cf9.ts.net:45080 (tailnet only)
 
         let https_ready = TailscaleStatusSnapshot {
             serve_https_enabled: true,
-            dns_name: Some("sparta.tail359cf9.ts.net".to_string()),
+            dns_name: Some("workstation.example.ts.net".to_string()),
             magic_dns_enabled: true,
             serve_enabled: true,
             ..tailnet_ready

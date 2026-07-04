@@ -26,11 +26,13 @@ use std::{
 use tokio::net::TcpListener;
 
 use crate::{
+    config::StreamProfile,
     input::{self, InputRequest},
+    model::{DeviceInfoResponse, MonitorInfo},
     network,
     security::{
-        IssuePairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME, SessionAuthError,
-        SessionGrant, TRUSTED_BROWSER_COOKIE_NAME, TRUSTED_BROWSER_MAX_LIFETIME,
+        IssueAccessPasswordError, IssuePairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME,
+        SessionAuthError, SessionGrant, TRUSTED_BROWSER_COOKIE_NAME, TRUSTED_BROWSER_MAX_LIFETIME,
         TrustedBrowserAuthError,
     },
     state::AppState,
@@ -39,8 +41,10 @@ use crate::{
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 const INDEX_HTML: &str = include_str!("../assets/remote.html");
+const ADMIN_HTML: &str = include_str!("../assets/admin.html");
 const SESSION_HEADER_NAME: &str = "x-rov-session";
 const TRUSTED_BROWSER_HEADER_NAME: &str = "x-rov-trusted";
+const ADMIN_TOKEN_HEADER_NAME: &str = "x-rov-admin-token";
 
 pub fn spawn_server(state: Arc<AppState>) {
     thread::spawn(move || {
@@ -64,7 +68,35 @@ pub fn spawn_server(state: Arc<AppState>) {
 async fn run_server(state: Arc<AppState>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/admin", get(admin_index))
+        .route("/admin/", get(admin_index))
+        .route("/api/admin/status", get(admin_status))
         .route("/api/admin/pair-code", post(admin_pair_code))
+        .route("/api/admin/device-code", post(admin_device_code))
+        .route("/api/admin/access-password", post(admin_access_password))
+        .route(
+            "/api/admin/access-password/generate",
+            post(admin_generate_access_password),
+        )
+        .route(
+            "/api/admin/access-password/clear",
+            post(admin_clear_access_password),
+        )
+        .route("/api/admin/remote-input", post(admin_remote_input))
+        .route("/api/admin/stream-profile", post(admin_stream_profile))
+        .route("/api/admin/monitor", post(admin_monitor))
+        .route(
+            "/api/admin/session/disconnect",
+            post(admin_disconnect_session),
+        )
+        .route(
+            "/api/admin/trusted-browsers/clear",
+            post(admin_clear_trusted_browsers),
+        )
+        .route("/api/admin/tailscale-url", post(admin_tailscale_url))
+        .route("/api/admin/panic-stop", post(admin_panic_stop))
+        .route("/api/device", get(device_info))
+        .route("/api/login", post(login))
         .route("/api/pair", post(pair))
         .route("/pair/browser", post(pair_browser))
         .route("/api/session/restore", post(restore_session))
@@ -152,6 +184,116 @@ async fn index() -> Response {
     response
 }
 
+async fn admin_index(
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_loopback_admin(remote_addr, &headers)?;
+    let mut response = Response::new(Body::from(ADMIN_HTML));
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    apply_security_headers(headers, true);
+    Ok(response)
+}
+
+#[derive(Serialize)]
+struct AdminStatusResponse {
+    device: DeviceInfoResponse,
+    port: u16,
+    loopback_url: String,
+    config_path: String,
+    host_elevated: bool,
+    pair_code: Option<AdminPairCodeState>,
+    session: Option<AdminSessionState>,
+    remote_user_agent: Option<String>,
+    trusted_browsers: Vec<AdminTrustedBrowserState>,
+    remote_pointer_requested: bool,
+    remote_keyboard_requested: bool,
+    remote_pointer_enabled: bool,
+    remote_keyboard_enabled: bool,
+    stream_profile: StreamProfile,
+    monitors: Vec<MonitorInfo>,
+    selected_monitor_id: Option<u32>,
+    admin_token_required: bool,
+}
+
+#[derive(Serialize)]
+struct AdminPairCodeState {
+    code: String,
+    expires_in_seconds: u64,
+    remaining_attempts: u8,
+}
+
+#[derive(Serialize)]
+struct AdminSessionState {
+    expires_in_seconds: u64,
+    bytes_sent: u64,
+    frame_responses: u64,
+    cached_frame_hits: u64,
+    status_responses: u64,
+}
+
+#[derive(Serialize)]
+struct AdminTrustedBrowserState {
+    id: String,
+    label: String,
+    created_ago_seconds: u64,
+    last_seen_ago_seconds: u64,
+}
+
+async fn admin_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    json_response(AdminStatusResponse {
+        device: state.device_info_response(),
+        port: state.port(),
+        loopback_url: format!("http://127.0.0.1:{}/", state.port()),
+        config_path: state.config_path().display().to_string(),
+        host_elevated: state.is_elevated(),
+        pair_code: state
+            .current_pair_code()
+            .map(|pair_code| AdminPairCodeState {
+                code: pair_code.code,
+                expires_in_seconds: pair_code.expires_in.as_secs(),
+                remaining_attempts: pair_code.remaining_attempts,
+            }),
+        session: state
+            .current_remote_session()
+            .map(|session| AdminSessionState {
+                expires_in_seconds: session.expires_in.as_secs(),
+                bytes_sent: session.bytes_sent,
+                frame_responses: session.frame_responses,
+                cached_frame_hits: session.cached_frame_hits,
+                status_responses: session.status_responses,
+            }),
+        remote_user_agent: state.current_remote_user_agent(),
+        trusted_browsers: state
+            .trusted_browser_snapshots()
+            .into_iter()
+            .map(|browser| AdminTrustedBrowserState {
+                id: browser.id,
+                label: browser.label,
+                created_ago_seconds: browser.created_ago.as_secs(),
+                last_seen_ago_seconds: browser.last_seen_ago.as_secs(),
+            })
+            .collect(),
+        remote_pointer_requested: state.remote_pointer_requested(),
+        remote_keyboard_requested: state.remote_keyboard_requested(),
+        remote_pointer_enabled: state.remote_pointer_enabled(),
+        remote_keyboard_enabled: state.remote_keyboard_enabled(),
+        stream_profile: state.stream_profile(),
+        monitors: state.monitors(),
+        selected_monitor_id: state.selected_monitor_id(),
+        admin_token_required: state.admin_token_required(),
+    })
+}
+
 #[derive(Serialize)]
 struct PairCodeResponse {
     code: String,
@@ -159,11 +301,49 @@ struct PairCodeResponse {
     remaining_attempts: u8,
 }
 
+#[derive(Serialize)]
+struct AdminMessageResponse {
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct AdminDeviceCodeRequest {
+    device_code: String,
+}
+
+#[derive(Deserialize)]
+struct AdminAccessPasswordRequest {
+    password: String,
+}
+
+#[derive(Serialize)]
+struct GeneratedAccessPasswordResponse {
+    password: String,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct AdminRemoteInputRequest {
+    pointer_enabled: Option<bool>,
+    keyboard_enabled: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct AdminStreamProfileRequest {
+    profile: StreamProfile,
+}
+
+#[derive(Deserialize)]
+struct AdminMonitorRequest {
+    monitor_id: u32,
+}
+
 async fn admin_pair_code(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
 ) -> ApiResult<Response> {
-    ensure_loopback_admin(remote_addr)?;
+    ensure_admin_api(remote_addr, &headers, &state)?;
     let snapshot = state.generate_pair_code();
     tracing::info!(
         remote_addr = %remote_addr,
@@ -183,9 +363,217 @@ async fn admin_pair_code(
     Ok(response)
 }
 
+async fn admin_device_code(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Json(request): Json<AdminDeviceCodeRequest>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    let code = state
+        .set_device_code(&request.device_code)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    json_response(AdminMessageResponse {
+        message: format!("Device code set to {code}"),
+    })
+}
+
+async fn admin_access_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Json(request): Json<AdminAccessPasswordRequest>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    state
+        .set_access_password(&request.password)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    json_response(AdminMessageResponse {
+        message: "Access password configured".to_string(),
+    })
+}
+
+async fn admin_generate_access_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    let password = crate::security::generate_access_password();
+    state.set_access_password(&password).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to store the generated access password: {err}"),
+        )
+    })?;
+    json_response(GeneratedAccessPasswordResponse {
+        password,
+        message: "Access password generated and stored".to_string(),
+    })
+}
+
+async fn admin_clear_access_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    state.clear_access_password().map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to clear the access password: {err}"),
+        )
+    })?;
+    json_response(AdminMessageResponse {
+        message: "Access password disabled".to_string(),
+    })
+}
+
+async fn admin_remote_input(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Json(request): Json<AdminRemoteInputRequest>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    if let Some(enabled) = request.pointer_enabled {
+        state
+            .set_remote_pointer_enabled(enabled)
+            .map_err(|err| (StatusCode::FORBIDDEN, err.to_string()))?;
+    }
+    if let Some(enabled) = request.keyboard_enabled {
+        state
+            .set_remote_keyboard_enabled(enabled)
+            .map_err(|err| (StatusCode::FORBIDDEN, err.to_string()))?;
+    }
+    json_response(AdminMessageResponse {
+        message: "Remote input settings updated".to_string(),
+    })
+}
+
+async fn admin_stream_profile(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Json(request): Json<AdminStreamProfileRequest>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    state.set_stream_profile(request.profile).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to set the stream profile: {err}"),
+        )
+    })?;
+    json_response(AdminMessageResponse {
+        message: format!("Stream profile set to {}", request.profile.label()),
+    })
+}
+
+async fn admin_monitor(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    Json(request): Json<AdminMonitorRequest>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    if !state
+        .monitors()
+        .iter()
+        .any(|monitor| monitor.id == request.monitor_id)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "that monitor is not currently available".to_string(),
+        ));
+    }
+    state
+        .set_selected_monitor(request.monitor_id)
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to select the monitor: {err}"),
+            )
+        })?;
+    json_response(AdminMessageResponse {
+        message: "Selected monitor updated".to_string(),
+    })
+}
+
+async fn admin_disconnect_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    state.revoke_remote_session();
+    json_response(AdminMessageResponse {
+        message: "Remote session disconnected".to_string(),
+    })
+}
+
+async fn admin_clear_trusted_browsers(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    let count = state.revoke_trusted_browsers().map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to clear trusted browsers: {err}"),
+        )
+    })?;
+    json_response(AdminMessageResponse {
+        message: format!("Forgot {count} trusted browser(s)"),
+    })
+}
+
+async fn admin_tailscale_url(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    network::enable_tailscale_client_url(state.port()).map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("failed to enable the Tailscale URL: {err}"),
+        )
+    })?;
+    json_response(AdminMessageResponse {
+        message: "Tailscale URL enabled".to_string(),
+    })
+}
+
+async fn admin_panic_stop(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+) -> ApiResult<Response> {
+    ensure_admin_api(remote_addr, &headers, &state)?;
+    state.panic_stop().map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("panic stop failed: {err}"),
+        )
+    })?;
+    json_response(AdminMessageResponse {
+        message: "Remote input, sessions, trusted browsers, pair code, and access password cleared"
+            .to_string(),
+    })
+}
+
 #[derive(Deserialize)]
 struct PairRequest {
     code: String,
+    #[serde(default = "default_true")]
+    remember_browser: bool,
+}
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    device_code: String,
+    password: String,
     #[serde(default = "default_true")]
     remember_browser: bool,
 }
@@ -198,6 +586,79 @@ struct PairBrowserFormRequest {
 
 fn default_true() -> bool {
     true
+}
+
+async fn device_info(State(state): State<Arc<AppState>>) -> ApiResult<Response> {
+    json_response(state.device_info_response())
+}
+
+fn json_response<T: Serialize>(value: T) -> ApiResult<Response> {
+    let payload = serde_json::to_vec(&value).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialize the response".to_string(),
+        )
+    })?;
+
+    let mut response = Response::new(Body::from(payload));
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    apply_security_headers(response.headers_mut(), false);
+    Ok(response)
+}
+
+async fn login(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<LoginRequest>,
+) -> ApiResult<Response> {
+    let user_agent = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    let grant = match state.issue_access_password_session(
+        &request.device_code,
+        &request.password,
+        user_agent.clone(),
+        request.remember_browser,
+    ) {
+        Ok(grant) => grant,
+        Err(error) => {
+            tracing::warn!(
+                error = ?error,
+                remember_browser = request.remember_browser,
+                user_agent = user_agent.as_deref().unwrap_or("unknown"),
+                "Unattended password login failed"
+            );
+            return Err(access_password_error_response(error));
+        }
+    };
+
+    tracing::info!(
+        remember_browser = request.remember_browser,
+        user_agent = user_agent.as_deref().unwrap_or("unknown"),
+        "Unattended password login approved successfully"
+    );
+    state
+        .enable_remote_control_for_paired_client()
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to arm remote control after password login".to_string(),
+            )
+        })?;
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let secure_cookie = request_is_https(&headers);
+    apply_session_cookies(response.headers_mut(), &grant, secure_cookie)?;
+    apply_token_headers(response.headers_mut(), &grant)?;
+    apply_security_headers(response.headers_mut(), false);
+    Ok(response)
 }
 
 async fn pair(
@@ -433,12 +894,42 @@ fn authorize_input_session(headers: &HeaderMap, state: &AppState) -> ApiResult<(
         .map_err(session_error_response)
 }
 
-fn ensure_loopback_admin(remote_addr: SocketAddr) -> ApiResult<()> {
-    if remote_addr.ip().is_loopback() {
+fn ensure_admin_api(
+    remote_addr: SocketAddr,
+    headers: &HeaderMap,
+    state: &AppState,
+) -> ApiResult<()> {
+    ensure_loopback_admin(remote_addr, headers)?;
+    let admin_token = token_value(headers, ADMIN_TOKEN_HEADER_NAME);
+    if state.authorize_admin_token(admin_token.as_deref()) {
         Ok(())
     } else {
-        Err((StatusCode::NOT_FOUND, "not found".to_string()))
+        Err((
+            StatusCode::UNAUTHORIZED,
+            "admin token required or invalid".to_string(),
+        ))
     }
+}
+
+fn ensure_loopback_admin(remote_addr: SocketAddr, headers: &HeaderMap) -> ApiResult<()> {
+    if remote_addr.ip().is_loopback() && !has_reverse_proxy_admin_headers(headers) {
+        return Ok(());
+    }
+
+    Err((StatusCode::NOT_FOUND, "not found".to_string()))
+}
+
+fn has_reverse_proxy_admin_headers(headers: &HeaderMap) -> bool {
+    [
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "cf-connecting-ip",
+    ]
+    .iter()
+    .any(|name| headers.contains_key(*name))
 }
 
 fn session_cookie(headers: &HeaderMap) -> ApiResult<String> {
@@ -516,6 +1007,30 @@ fn pairing_error_response(error: IssuePairingError) -> (StatusCode, String) {
             }
         },
         IssuePairingError::Storage => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to persist the trusted browser record".to_string(),
+        ),
+    }
+}
+
+fn access_password_error_response(error: IssueAccessPasswordError) -> (StatusCode, String) {
+    match error {
+        IssueAccessPasswordError::Access(error) => match error {
+            crate::security::AccessPasswordError::MissingDeviceCode
+            | crate::security::AccessPasswordError::MissingPassword => {
+                (StatusCode::BAD_REQUEST, error.to_string())
+            }
+            crate::security::AccessPasswordError::PasswordNotConfigured => {
+                (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+            crate::security::AccessPasswordError::InvalidCredentials => {
+                (StatusCode::UNAUTHORIZED, error.to_string())
+            }
+            crate::security::AccessPasswordError::TooManyAttempts => {
+                (StatusCode::TOO_MANY_REQUESTS, error.to_string())
+            }
+        },
+        IssueAccessPasswordError::Storage => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to persist the trusted browser record".to_string(),
         ),
@@ -866,6 +1381,7 @@ fn tailscale_port_is_in_use(err: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ensure_loopback_admin, tailscale_port_is_in_use};
+    use axum::http::{HeaderMap, HeaderValue};
     use std::io::{Error, ErrorKind};
     use std::net::{Ipv4Addr, SocketAddr};
 
@@ -885,8 +1401,18 @@ mod tests {
     fn local_admin_routes_only_allow_loopback_clients() {
         let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 45080));
         let remote = SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 45080));
+        let headers = HeaderMap::new();
 
-        assert!(ensure_loopback_admin(loopback).is_ok());
-        assert!(ensure_loopback_admin(remote).is_err());
+        assert!(ensure_loopback_admin(loopback, &headers).is_ok());
+        assert!(ensure_loopback_admin(remote, &headers).is_err());
+    }
+
+    #[test]
+    fn local_admin_routes_reject_reverse_proxied_loopback_requests() {
+        let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 45080));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+
+        assert!(ensure_loopback_admin(loopback, &headers).is_err());
     }
 }

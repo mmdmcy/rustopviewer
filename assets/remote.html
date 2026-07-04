@@ -13,6 +13,7 @@
       --border: rgba(148, 163, 184, 0.16);
       --ink: #edf4fb;
       --muted: #93a7bf;
+      --accent: #f97316;
       --ok: #4ade80;
       --warn: #f59e0b;
       --danger: #f87171;
@@ -153,12 +154,12 @@
     }
 
     .overlay-card {
-      width: min(430px, 100%);
+      width: min(760px, 100%);
       padding: 18px 16px;
       border-radius: var(--radius-xl);
       border: 1px solid rgba(148, 163, 184, 0.16);
       background: rgba(8, 15, 24, 0.82);
-      text-align: center;
+      text-align: left;
     }
 
     .overlay-card strong {
@@ -175,6 +176,98 @@
       font-size: 0.95rem;
     }
 
+    .overlay-card > strong,
+    .overlay-card > span {
+      text-align: center;
+    }
+
+    .dashboard-panel,
+    .access-panel {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .dashboard-panel[hidden],
+    .access-panel[hidden] {
+      display: none !important;
+    }
+
+    .device-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .device-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 72px;
+      padding: 10px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: rgba(6, 11, 18, 0.72);
+    }
+
+    .device-icon {
+      display: grid;
+      place-items: center;
+      inline-size: 46px;
+      block-size: 46px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: linear-gradient(145deg, rgba(249, 115, 22, 0.34), rgba(37, 99, 235, 0.22));
+      color: var(--ink);
+      font-family: var(--mono);
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .device-main {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .device-title {
+      font-weight: 750;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .device-meta,
+    .device-code {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .device-code {
+      font-family: var(--mono);
+      color: #cbd5e1;
+    }
+
+    .device-actions,
+    .panel-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .empty-devices {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      padding: 2px 0;
+    }
+
     .pairing-panel {
       display: grid;
       gap: 10px;
@@ -186,7 +279,8 @@
       display: none !important;
     }
 
-    .pair-code-input {
+    .pair-code-input,
+    .access-input {
       width: 100%;
       min-height: 48px;
       padding: 11px 12px;
@@ -199,9 +293,22 @@
       text-transform: uppercase;
     }
 
+    .access-input {
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .access-input[type="password"] {
+      font-family: var(--mono);
+    }
+
     .pair-code-input::placeholder {
       color: rgba(147, 167, 191, 0.75);
       letter-spacing: 0.08em;
+    }
+
+    .access-input::placeholder {
+      color: rgba(147, 167, 191, 0.75);
     }
 
     .remember-browser {
@@ -225,6 +332,17 @@
       color: var(--muted);
       font-size: 0.88rem;
       line-height: 1.45;
+    }
+
+    .text-button {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: #bfdbfe;
+      padding: 8px 2px;
+      font: inherit;
+      font-weight: 650;
+      text-align: left;
     }
 
     .hud-top,
@@ -488,6 +606,21 @@
       }
     }
 
+    @media (max-width: 640px) {
+      .device-row {
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+
+      .device-actions {
+        grid-column: 1 / -1;
+        justify-content: stretch;
+      }
+
+      .device-actions .action {
+        flex: 1 1 120px;
+      }
+    }
+
     @media (orientation: landscape) and (max-height: 430px) {
       body {
         padding:
@@ -570,13 +703,35 @@
         <div class="overlay-card">
           <strong id="overlayTitle">Waiting for the host</strong>
           <span id="overlayMessage">The live workspace will appear here when the host is ready.</span>
+          <div class="dashboard-panel" id="dashboardPanel" hidden>
+            <div class="device-list" id="currentDeviceList"></div>
+            <div class="device-list" id="rememberedDeviceList"></div>
+            <div class="empty-devices" id="rememberedDeviceEmpty" hidden>No other devices are remembered in this browser yet.</div>
+          </div>
+          <div class="access-panel" id="passwordPanel" hidden>
+            <input class="access-input" id="deviceCodeInput" type="text" autocomplete="off" maxlength="32" placeholder="Device code">
+            <input class="access-input" id="accessPasswordInput" type="password" autocomplete="current-password" placeholder="Access password">
+            <label class="remember-browser" for="rememberPasswordToggle">
+              <input id="rememberPasswordToggle" type="checkbox" checked>
+              <span>Remember this browser on this device</span>
+            </label>
+            <div class="panel-actions">
+              <button class="action" id="passwordLoginButton">Connect</button>
+              <button class="action" id="passwordBackButton">Back</button>
+            </div>
+            <button class="text-button" id="passwordPairFallbackButton" type="button">Use a one-time access code</button>
+            <div class="pair-hint" id="passwordHint">Enter this host's device code and unattended password.</div>
+          </div>
           <div class="pairing-panel" id="pairingPanel" hidden>
             <input class="pair-code-input" id="pairCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Access code">
             <label class="remember-browser" for="rememberBrowserToggle">
               <input id="rememberBrowserToggle" type="checkbox" checked>
               <span>Remember this browser on this device</span>
             </label>
-            <button class="action" id="pairButton">Approve Browser</button>
+            <div class="panel-actions">
+              <button class="action" id="pairButton">Approve Browser</button>
+              <button class="action" id="pairBackButton">Back</button>
+            </div>
             <div class="pair-hint" id="pairHint">Generate a fresh one-time access code in the host console.</div>
           </div>
         </div>
@@ -693,6 +848,7 @@
     const TAP_MOVE_TOLERANCE_PX = 12;
     const SESSION_STORAGE_KEY = "rov_session";
     const TRUSTED_STORAGE_KEY = "rov_trusted";
+    const DEVICE_DIRECTORY_KEY = "rov_devices";
     const DESKTOP_INPUT_MEDIA_QUERY = "(hover: hover) and (pointer: fine)";
 
     const state = {
@@ -723,9 +879,12 @@
       sessionActive: false,
       sessionToken: "",
       pairingBusy: false,
+      passwordBusy: false,
       trustedRestoreInFlight: false,
       trustedToken: "",
       trustedRestoreAvailable: true,
+      currentDevice: null,
+      rememberedDevices: [],
       statusTimerId: 0,
       statusRequestInFlight: false,
       frameTimerId: 0,
@@ -748,10 +907,23 @@
     const frameOverlay = document.getElementById("frameOverlay");
     const overlayTitle = document.getElementById("overlayTitle");
     const overlayMessage = document.getElementById("overlayMessage");
+    const dashboardPanel = document.getElementById("dashboardPanel");
+    const currentDeviceList = document.getElementById("currentDeviceList");
+    const rememberedDeviceList = document.getElementById("rememberedDeviceList");
+    const rememberedDeviceEmpty = document.getElementById("rememberedDeviceEmpty");
+    const passwordPanel = document.getElementById("passwordPanel");
+    const deviceCodeInput = document.getElementById("deviceCodeInput");
+    const accessPasswordInput = document.getElementById("accessPasswordInput");
+    const rememberPasswordToggle = document.getElementById("rememberPasswordToggle");
+    const passwordLoginButton = document.getElementById("passwordLoginButton");
+    const passwordBackButton = document.getElementById("passwordBackButton");
+    const passwordPairFallbackButton = document.getElementById("passwordPairFallbackButton");
+    const passwordHint = document.getElementById("passwordHint");
     const pairingPanel = document.getElementById("pairingPanel");
     const pairCodeInput = document.getElementById("pairCodeInput");
     const rememberBrowserToggle = document.getElementById("rememberBrowserToggle");
     const pairButton = document.getElementById("pairButton");
+    const pairBackButton = document.getElementById("pairBackButton");
     const pairHint = document.getElementById("pairHint");
     const connectionPill = document.getElementById("connectionPill");
     const connectionHint = document.getElementById("connectionHint");
@@ -818,9 +990,55 @@
       }
     }
 
+    function readRememberedDevices() {
+      try {
+        const raw = window.localStorage.getItem(DEVICE_DIRECTORY_KEY);
+        const devices = JSON.parse(raw || "[]");
+        return Array.isArray(devices)
+          ? devices.filter((device) => device && typeof device === "object")
+          : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function writeRememberedDevices(devices) {
+      try {
+        window.localStorage.setItem(DEVICE_DIRECTORY_KEY, JSON.stringify(devices.slice(0, 24)));
+      } catch {
+        // Device history is a convenience; failed persistence should not block control.
+      }
+    }
+
     function syncStoredTokensFromState() {
       writeStoredToken(SESSION_STORAGE_KEY, state.sessionToken);
       writeStoredToken(TRUSTED_STORAGE_KEY, state.trustedToken);
+    }
+
+    function rememberCurrentDevice() {
+      if (!state.currentDevice?.device_code) {
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const entry = {
+        id: `${state.currentDevice.device_code}|${APP_BASE_URL.href}`,
+        device_code: state.currentDevice.device_code,
+        display_name: state.currentDevice.display_name || "RustOp host",
+        username: state.currentDevice.username || "",
+        hostname: state.currentDevice.hostname || "",
+        os: state.currentDevice.os || state.currentDevice.os_family || "Unknown OS",
+        os_family: state.currentDevice.os_family || "",
+        url: APP_BASE_URL.href,
+        last_seen_at: now
+      };
+
+      state.rememberedDevices = [
+        entry,
+        ...state.rememberedDevices.filter((device) => device.id !== entry.id)
+      ].slice(0, 24);
+      writeRememberedDevices(state.rememberedDevices);
+      renderDashboard();
     }
 
     function applyIssuedTokens(response) {
@@ -846,6 +1064,184 @@
       return headers;
     }
 
+    async function loadDeviceInfo() {
+      try {
+        const response = await fetch(apiUrl("api/device"), {
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+        if (!response.ok) {
+          throw new Error(`device ${response.status}`);
+        }
+        state.currentDevice = await response.json();
+        renderDashboard();
+      } catch {
+        state.currentDevice = null;
+        renderDashboard();
+      }
+    }
+
+    function renderDashboard() {
+      renderCurrentDevice();
+      renderRememberedDevices();
+    }
+
+    function renderCurrentDevice() {
+      currentDeviceList.textContent = "";
+      const device = state.currentDevice || {
+        device_code: "",
+        display_name: "Current host",
+        os: "Unknown OS",
+        password_enabled: false
+      };
+      const row = createDeviceRow(device, {
+        current: true,
+        connectLabel: device.password_enabled ? "Connect" : "Password Off",
+        connectDisabled: !device.password_enabled,
+        onConnect: () => showPasswordLogin(device),
+        secondaryLabel: "Access Code",
+        onSecondary: () => showPairing(
+          "Approve this browser",
+          "Enter the one-time access code shown in the host console."
+        )
+      });
+      currentDeviceList.appendChild(row);
+    }
+
+    function renderRememberedDevices() {
+      rememberedDeviceList.textContent = "";
+      const currentId = state.currentDevice?.device_code
+        ? `${state.currentDevice.device_code}|${APP_BASE_URL.href}`
+        : "";
+      const devices = state.rememberedDevices.filter((device) => device.id !== currentId);
+      rememberedDeviceEmpty.hidden = devices.length > 0;
+      for (const device of devices.slice(0, 8)) {
+        rememberedDeviceList.appendChild(createDeviceRow(device, {
+          connectLabel: sameUrl(device.url, APP_BASE_URL.href) ? "Connect" : "Open",
+          onConnect: () => {
+            if (sameUrl(device.url, APP_BASE_URL.href)) {
+              showPasswordLogin({
+                ...device,
+                password_enabled: state.currentDevice?.password_enabled !== false
+              });
+              return;
+            }
+            if (device.url) {
+              window.location.href = device.url;
+            }
+          }
+        }));
+      }
+    }
+
+    function createDeviceRow(device, options = {}) {
+      const row = document.createElement("div");
+      row.className = "device-row";
+
+      const icon = document.createElement("div");
+      icon.className = "device-icon";
+      icon.textContent = deviceIconText(device);
+      icon.style.background = deviceIconBackground(device.device_code || device.id || "");
+
+      const main = document.createElement("div");
+      main.className = "device-main";
+
+      const title = document.createElement("div");
+      title.className = "device-title";
+      title.textContent = device.display_name || "RustOp host";
+
+      const meta = document.createElement("div");
+      meta.className = "device-meta";
+      meta.textContent = [
+        device.os || device.os_family || "Unknown OS",
+        options.current ? "current host" : lastSeenLabel(device.last_seen_at)
+      ].filter(Boolean).join(" | ");
+
+      const code = document.createElement("div");
+      code.className = "device-code";
+      code.textContent = device.device_code ? `Code ${device.device_code}` : "Code unavailable";
+
+      main.append(title, meta, code);
+
+      const actions = document.createElement("div");
+      actions.className = "device-actions";
+      if (options.onConnect) {
+        const connect = document.createElement("button");
+        connect.className = "action";
+        connect.type = "button";
+        connect.textContent = options.connectLabel || "Open";
+        connect.disabled = !!options.connectDisabled;
+        bindTap(connect, options.onConnect);
+        actions.appendChild(connect);
+      }
+      if (options.onSecondary) {
+        const secondary = document.createElement("button");
+        secondary.className = "action";
+        secondary.type = "button";
+        secondary.textContent = options.secondaryLabel || "Access Code";
+        bindTap(secondary, options.onSecondary);
+        actions.appendChild(secondary);
+      }
+
+      row.append(icon, main, actions);
+      return row;
+    }
+
+    function deviceIconText(device) {
+      const family = `${device.os_family || device.os || ""}`.toLowerCase();
+      if (family.includes("windows")) {
+        return "WIN";
+      }
+      if (family.includes("linux")) {
+        return "LIN";
+      }
+      if (family.includes("mac")) {
+        return "MAC";
+      }
+      const code = `${device.device_code || device.display_name || "ROV"}`.replace(/[^a-z0-9]/gi, "");
+      return (code.slice(0, 3) || "ROV").toUpperCase();
+    }
+
+    function deviceIconBackground(seed) {
+      let hash = 0;
+      for (const character of `${seed || "rov"}`) {
+        hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+      }
+      const hue = Math.abs(hash) % 360;
+      const accentHue = (hue + 42) % 360;
+      return `linear-gradient(145deg, hsl(${hue} 72% 34%), hsl(${accentHue} 70% 24%))`;
+    }
+
+    function lastSeenLabel(value) {
+      if (!value) {
+        return "";
+      }
+      const timestamp = Date.parse(value);
+      if (!Number.isFinite(timestamp)) {
+        return "";
+      }
+      const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+      if (minutes < 1) {
+        return "seen just now";
+      }
+      if (minutes < 60) {
+        return `seen ${minutes}m ago`;
+      }
+      const hours = Math.round(minutes / 60);
+      if (hours < 48) {
+        return `seen ${hours}h ago`;
+      }
+      return `seen ${Math.round(hours / 24)}d ago`;
+    }
+
+    function sameUrl(left, right) {
+      try {
+        return new URL(left).href === new URL(right).href;
+      } catch {
+        return left === right;
+      }
+    }
+
     function detectDesktopClient() {
       return !!desktopInputMedia?.matches;
     }
@@ -867,9 +1263,12 @@
       state.sessionToken = readStoredToken(SESSION_STORAGE_KEY);
       state.trustedToken = readStoredToken(TRUSTED_STORAGE_KEY);
       state.trustedRestoreAvailable = !!state.trustedToken;
+      state.rememberedDevices = readRememberedDevices();
       state.desktopClient = detectDesktopClient();
       const hasPairRedirectState = applyPairRedirectState();
       bindControls();
+      renderDashboard();
+      loadDeviceInfo();
       syncDesktopClientState();
       syncUiState();
       if (!hasPairRedirectState) {
@@ -971,7 +1370,7 @@
         desktopInputMedia.addListener(onDesktopInputMediaChange);
       }
 
-      [toolsSheet, textInput, pairingPanel, pairCodeInput]
+      [toolsSheet, textInput, dashboardPanel, passwordPanel, deviceCodeInput, accessPasswordInput, pairingPanel, pairCodeInput]
         .filter(Boolean)
         .forEach((element) => {
           ["pointerdown", "pointerup", "click"].forEach((eventName) => {
@@ -991,6 +1390,39 @@
 
       bindTap(pairButton, () => {
         attemptPairing();
+      });
+
+      bindTap(pairBackButton, () => {
+        showDashboard();
+      });
+
+      bindTap(passwordLoginButton, () => {
+        attemptPasswordLogin();
+      });
+
+      bindTap(passwordBackButton, () => {
+        showDashboard();
+      });
+
+      bindTap(passwordPairFallbackButton, () => {
+        showPairing(
+          "Approve this browser",
+          "Enter the one-time access code shown in the host console."
+        );
+      });
+
+      accessPasswordInput?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          attemptPasswordLogin();
+        }
+      });
+
+      deviceCodeInput?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          accessPasswordInput.focus();
+        }
       });
 
       pairCodeInput?.addEventListener("keydown", (event) => {
@@ -1455,8 +1887,8 @@
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
-          setConnectionState("Approval required", "Enter the current access code from the host console", "warn");
-          showPairing("Approve this browser", "Enter the one-time access code shown in the host console.");
+          setConnectionState("Approval required", "Choose a saved device or approve this browser", "warn");
+          showDashboard("Devices", "Choose this host, a remembered device, or approve this browser with a one-time code.");
           return false;
         }
 
@@ -1471,6 +1903,7 @@
         state.idleFrameIntervalMs = Math.max(state.activeFrameIntervalMs, Number(payload.idle_frame_interval_ms) || DEFAULT_IDLE_FRAME_INTERVAL_MS);
         state.interactionBoostWindowMs = Math.max(600, Number(payload.interaction_boost_window_ms) || DEFAULT_INTERACTION_BOOST_MS);
         setSessionActive(true);
+        rememberCurrentDevice();
         syncUiState();
         if (payload.selected_monitor) {
           const monitor = payload.selected_monitor;
@@ -1565,7 +1998,7 @@
           state.pointerEnabled = false;
           state.keyboardEnabled = false;
           syncUiState();
-          showPairing("Approve this browser", "This browser needs a fresh access code from the host console.");
+          showDashboard("Devices", "This browser needs fresh approval before control can continue.");
           return;
         }
 
@@ -1727,7 +2160,7 @@
           }
 
           setSessionActive(false);
-          showPairing("Approve this browser", "This browser needs a fresh access code from the host console.");
+          showDashboard("Devices", "This browser needs fresh approval before control can continue.");
           return {
             ok: false,
             status: response.status,
@@ -2129,6 +2562,8 @@
         state.pairingBusy ||
         event.defaultPrevented ||
         event.isComposing ||
+        !dashboardPanel.hidden ||
+        !passwordPanel.hidden ||
         !pairingPanel.hidden ||
         isEditableInputTarget(event.target)
       );
@@ -2627,13 +3062,53 @@
     function showOverlay(title, message) {
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
-       pairingPanel.hidden = true;
+      dashboardPanel.hidden = true;
+      passwordPanel.hidden = true;
+      pairingPanel.hidden = true;
       frameOverlay.classList.remove("hidden");
     }
 
     function hideOverlay() {
       frameOverlay.classList.add("hidden");
+      dashboardPanel.hidden = true;
+      passwordPanel.hidden = true;
       pairingPanel.hidden = true;
+    }
+
+    function showDashboard(title = "Devices", message = "Choose this host or a remembered device.") {
+      setSessionActive(false);
+      overlayTitle.textContent = title;
+      overlayMessage.textContent = message;
+      renderDashboard();
+      dashboardPanel.hidden = false;
+      passwordPanel.hidden = true;
+      pairingPanel.hidden = true;
+      frameOverlay.classList.remove("hidden");
+    }
+
+    function showPasswordLogin(device = state.currentDevice) {
+      setSessionActive(false);
+      overlayTitle.textContent = device?.display_name || "Connect to device";
+      overlayMessage.textContent = device?.os
+        ? `${device.os} | ${device.device_code || "No device code"}`
+        : "Enter this host's device code and unattended password.";
+      deviceCodeInput.value = device?.device_code || "";
+      accessPasswordInput.value = "";
+      passwordHint.textContent = device?.password_enabled === false
+        ? "Set an unattended access password on the host first, or use a one-time access code."
+        : "Enter the unattended access password for this host.";
+      passwordLoginButton.disabled = device?.password_enabled === false;
+      dashboardPanel.hidden = true;
+      passwordPanel.hidden = false;
+      pairingPanel.hidden = true;
+      frameOverlay.classList.remove("hidden");
+      window.setTimeout(() => {
+        if (deviceCodeInput.value) {
+          accessPasswordInput.focus();
+        } else {
+          deviceCodeInput.focus();
+        }
+      }, 0);
     }
 
     function showPairing(title, message, hint) {
@@ -2641,8 +3116,86 @@
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
       pairHint.textContent = hint || "Generate a fresh one-time access code in the host console.";
+      dashboardPanel.hidden = true;
+      passwordPanel.hidden = true;
       pairingPanel.hidden = false;
       frameOverlay.classList.remove("hidden");
+    }
+
+    async function attemptPasswordLogin() {
+      if (state.passwordBusy) {
+        return;
+      }
+
+      const deviceCode = deviceCodeInput.value.trim();
+      const password = accessPasswordInput.value;
+      if (!deviceCode) {
+        passwordHint.textContent = "Enter this host's device code.";
+        deviceCodeInput.focus();
+        return;
+      }
+      if (!password) {
+        passwordHint.textContent = "Enter the unattended access password.";
+        accessPasswordInput.focus();
+        return;
+      }
+
+      state.passwordBusy = true;
+      passwordLoginButton.disabled = true;
+      passwordLoginButton.textContent = "Connecting...";
+      passwordHint.textContent = "Checking the device code and password...";
+      stopPolling();
+
+      try {
+        const response = await fetch(apiUrl("api/login"), {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            device_code: deviceCode,
+            password,
+            remember_browser: rememberPasswordToggle?.checked !== false
+          }),
+          credentials: "same-origin"
+        });
+
+        if (response.ok) {
+          applyIssuedTokens(response);
+          state.trustedRestoreAvailable = !!state.trustedToken;
+          rememberCurrentDevice();
+          accessPasswordInput.value = "";
+          hideOverlay();
+          setSessionActive(true);
+          refreshStatus(false);
+          return;
+        }
+
+        let message = "";
+        try {
+          message = (await response.text()).trim();
+        } catch {
+          message = "";
+        }
+        passwordHint.textContent = message || `Login failed with status ${response.status}.`;
+        if (response.status === 503) {
+          if (state.currentDevice) {
+            state.currentDevice.password_enabled = false;
+            renderDashboard();
+          }
+          passwordLoginButton.disabled = true;
+        }
+      } catch (error) {
+        passwordHint.textContent = error?.message || "Failed to reach the host.";
+      } finally {
+        state.passwordBusy = false;
+        if (state.currentDevice?.password_enabled !== false) {
+          passwordLoginButton.disabled = false;
+        }
+        passwordLoginButton.textContent = "Connect";
+        scheduleNextStatus();
+      }
     }
 
     async function attemptPairing() {

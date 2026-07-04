@@ -1,6 +1,11 @@
 /target
 /.idea
 /.vscode
+/.private/
+/private/
+.env
+.env.*
+!.env.example
 *.user
 *.suo
 Thumbs.db
