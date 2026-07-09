@@ -451,6 +451,7 @@
     }
 
     .mode-bar .chip.active,
+    .chip.active,
     .action.active {
       border-color: rgba(249, 115, 22, 0.5);
       background:
@@ -530,6 +531,12 @@
       gap: 10px;
     }
 
+    .keyboard-mode-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
     .text-box {
       width: 100%;
       min-height: 100px;
@@ -568,6 +575,11 @@
     body.desktop-client #keyboardBtn,
     body.desktop-client #toolsToggleBtn,
     body.desktop-client #quickKeyboardBtn {
+      display: none !important;
+    }
+
+    body:not(.desktop-client) #keyCaptureBtn,
+    body:not(.desktop-client) #keyboardPill {
       display: none !important;
     }
 
@@ -742,10 +754,12 @@
           <div class="pill warn" id="connectionPill"><strong>Connecting</strong><span id="connectionHint">Waiting for the server</span></div>
           <div class="pill" id="monitorPill"><strong>Monitor</strong><span id="monitorHint">Unknown</span></div>
           <div class="pill" id="framePill"><strong>Frame</strong><span id="frameHint">Pending</span></div>
+          <div class="pill warn" id="keyboardPill"><strong>Keys</strong><span id="keyboardHint">Released</span></div>
         </div>
         <div class="hud-actions">
           <button class="chip" id="fullscreenBtn">Fill Screen</button>
           <button class="chip" id="keyboardBtn">Keyboard</button>
+          <button class="chip" id="keyCaptureBtn">Capture Keys</button>
           <button class="chip compact" id="zoomOutBtn">-</button>
           <button class="chip compact" id="zoomResetBtn">1.0x</button>
           <button class="chip compact" id="zoomInBtn">+</button>
@@ -789,6 +803,11 @@
           <div class="sheet-heading">
             <strong>Keyboard</strong>
             <span>Send text plus editing shortcuts for the focused app.</span>
+          </div>
+
+          <div class="keyboard-mode-row">
+            <button class="action active" id="composeTypingBtn">Compose</button>
+            <button class="action" id="liveTypingBtn">Live</button>
           </div>
 
           <div class="text-row">
@@ -846,6 +865,7 @@
     const SCROLL_START_PX = 14;
     const SCROLL_STEP_PX = 24;
     const TAP_MOVE_TOLERANCE_PX = 12;
+    const LIVE_TEXT_CHUNK_CHARS = 256;
     const SESSION_STORAGE_KEY = "rov_session";
     const TRUSTED_STORAGE_KEY = "rov_trusted";
     const DEVICE_DIRECTORY_KEY = "rov_devices";
@@ -870,6 +890,13 @@
       sendingText: false,
       textComposing: false,
       keyboardVisible: false,
+      keyboardCaptured: false,
+      keyboardCapturePaused: false,
+      liveTyping: false,
+      liveInputQueue: [],
+      liveInputFlushInFlight: false,
+      liveInputEventToken: 0,
+      liveTextSnapshot: "",
       lastTextInputAt: 0,
       lastInteractionAt: 0,
       desktopClient: false,
@@ -936,6 +963,7 @@
     const returnDock = document.querySelector(".return-dock");
     const fullscreenBtn = document.getElementById("fullscreenBtn");
     const keyboardBtn = document.getElementById("keyboardBtn");
+    const keyCaptureBtn = document.getElementById("keyCaptureBtn");
     const zoomOutBtn = document.getElementById("zoomOutBtn");
     const zoomResetBtn = document.getElementById("zoomResetBtn");
     const zoomInBtn = document.getElementById("zoomInBtn");
@@ -958,6 +986,10 @@
     const rightClickModeBtn = document.getElementById("rightClickModeBtn");
     const textInput = document.getElementById("textInput");
     const sendTextBtn = document.getElementById("sendTextBtn");
+    const composeTypingBtn = document.getElementById("composeTypingBtn");
+    const liveTypingBtn = document.getElementById("liveTypingBtn");
+    const keyboardPill = document.getElementById("keyboardPill");
+    const keyboardHint = document.getElementById("keyboardHint");
     const desktopInputMedia = typeof window.matchMedia === "function"
       ? window.matchMedia(DESKTOP_INPUT_MEDIA_QUERY)
       : null;
@@ -1249,6 +1281,8 @@
     function syncDesktopClientState() {
       body.classList.toggle("desktop-client", state.desktopClient);
       if (!state.desktopClient) {
+        state.keyboardCaptured = false;
+        state.keyboardCapturePaused = false;
         return;
       }
 
@@ -1257,6 +1291,7 @@
       if (document.activeElement === textInput) {
         textInput.blur();
       }
+      syncKeyboardCaptureAvailability();
     }
 
     function boot() {
@@ -1386,6 +1421,13 @@
 
       bindTap(keyboardBtn, () => {
         toggleKeyboard();
+      });
+
+      bindTap(keyCaptureBtn, () => {
+        if (!state.desktopClient || !state.sessionActive || !state.keyboardEnabled) {
+          return;
+        }
+        setKeyboardCaptured(!state.keyboardCaptured, { manual: true });
       });
 
       bindTap(pairButton, () => {
@@ -1536,18 +1578,34 @@
       textInput.addEventListener("compositionstart", () => {
         state.textComposing = true;
         state.lastTextInputAt = Date.now();
+        state.liveTextSnapshot = textInput.value;
       });
 
       textInput.addEventListener("compositionend", () => {
         state.textComposing = false;
         state.lastTextInputAt = Date.now();
+        if (state.liveTyping) {
+          window.setTimeout(processLiveTextInput, 0);
+        }
+      });
+
+      textInput.addEventListener("beforeinput", (event) => {
+        handleLiveBeforeInput(event);
       });
 
       textInput.addEventListener("input", () => {
         state.lastTextInputAt = Date.now();
+        if (state.liveTyping) {
+          processLiveTextInput();
+        }
       });
 
       textInput.addEventListener("keydown", (event) => {
+        if (state.liveTyping) {
+          handleLiveKeyFallback(event);
+          return;
+        }
+
         if (
           event.key !== "Enter" ||
           event.shiftKey ||
@@ -1588,6 +1646,14 @@
 
       bindTap(sendTextBtn, () => {
         submitTextInput();
+      });
+
+      bindTap(composeTypingBtn, () => {
+        setLiveTyping(false);
+      });
+
+      bindTap(liveTypingBtn, () => {
+        setLiveTyping(true);
       });
 
       document.querySelectorAll("[data-shortcut]").forEach((button) => {
@@ -1734,6 +1800,7 @@
     }
 
     function syncUiState() {
+      syncKeyboardCaptureAvailability();
       const toolsPanelVisible = state.toolsOpen && state.sheetMode === "tools" && !state.uiHidden;
       const keyboardPanelVisible = state.toolsOpen && state.sheetMode === "keyboard" && !state.uiHidden;
       body.classList.toggle("tools-open", state.toolsOpen && !state.uiHidden);
@@ -1759,13 +1826,22 @@
       keyboardBtn.disabled = !state.keyboardEnabled;
       quickKeyboardBtn.disabled = !state.keyboardEnabled;
       toolsToggleBtn.disabled = !state.keyboardEnabled;
+      syncKeyboardCaptureUi();
       dragModeBtn.disabled = !state.pointerEnabled;
       scrollModeBtn.disabled = !state.pointerEnabled;
       directModeBtn.disabled = !state.pointerEnabled;
       leftClickModeBtn.disabled = !state.pointerEnabled;
       rightClickModeBtn.disabled = !state.pointerEnabled;
       textInput.disabled = !state.keyboardEnabled;
-      sendTextBtn.disabled = state.sendingText || !state.keyboardEnabled;
+      sendTextBtn.disabled = state.sendingText || !state.keyboardEnabled || state.liveTyping;
+      composeTypingBtn.classList.toggle("active", !state.liveTyping);
+      liveTypingBtn.classList.toggle("active", state.liveTyping);
+      composeTypingBtn.disabled = !state.keyboardEnabled;
+      liveTypingBtn.disabled = !state.keyboardEnabled;
+      textInput.placeholder = state.liveTyping ? "Live typing active" : "Type text here";
+      if (!state.sendingText) {
+        sendTextBtn.textContent = state.liveTyping ? "Live" : "Send Text";
+      }
       toolsPanel.hidden = !toolsPanelVisible;
       keyboardPanel.hidden = !keyboardPanelVisible;
       scheduleViewportLayout();
@@ -1777,6 +1853,64 @@
       quickZoomResetBtn.textContent = zoomLabel;
       zoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
       quickZoomResetBtn.classList.toggle("active", state.viewScale > 1.001);
+    }
+
+    function keyboardCaptureAvailable() {
+      return state.desktopClient && state.sessionActive && state.keyboardEnabled;
+    }
+
+    function syncKeyboardCaptureAvailability() {
+      if (!keyboardCaptureAvailable()) {
+        state.keyboardCaptured = false;
+        return;
+      }
+
+      if (!state.keyboardCapturePaused) {
+        state.keyboardCaptured = true;
+      }
+    }
+
+    function setKeyboardCaptured(captured, options = {}) {
+      if (!keyboardCaptureAvailable()) {
+        state.keyboardCaptured = false;
+        state.keyboardCapturePaused = false;
+        syncUiState();
+        return;
+      }
+
+      state.keyboardCaptured = !!captured;
+      if (options.manual) {
+        state.keyboardCapturePaused = !state.keyboardCaptured;
+      }
+      syncUiState();
+    }
+
+    function syncKeyboardCaptureUi() {
+      const available = keyboardCaptureAvailable();
+      keyCaptureBtn.hidden = !state.desktopClient;
+      keyboardPill.hidden = !state.desktopClient;
+      keyCaptureBtn.disabled = !available;
+      keyCaptureBtn.classList.toggle("active", state.keyboardCaptured);
+      keyCaptureBtn.textContent = state.keyboardCaptured ? "Release Keys" : "Capture Keys";
+
+      if (!state.desktopClient) {
+        return;
+      }
+
+      if (!state.sessionActive) {
+        keyboardPill.className = "pill warn";
+        keyboardHint.textContent = "No session";
+        return;
+      }
+
+      if (!state.keyboardEnabled) {
+        keyboardPill.className = "pill warn";
+        keyboardHint.textContent = "Disabled";
+        return;
+      }
+
+      keyboardPill.className = state.keyboardCaptured ? "pill ok" : "pill warn";
+      keyboardHint.textContent = state.keyboardCaptured ? "Captured" : "Released";
     }
 
     async function restoreTrustedSession() {
@@ -1821,6 +1955,8 @@
       state.sessionActive = nextActive;
 
       if (!nextActive) {
+        state.keyboardCaptured = false;
+        state.liveInputQueue.length = 0;
         if (state.frameTimerId) {
           window.clearTimeout(state.frameTimerId);
           state.frameTimerId = 0;
@@ -1828,6 +1964,10 @@
         return;
       }
 
+      if (!wasActive) {
+        state.keyboardCapturePaused = false;
+      }
+      syncKeyboardCaptureAvailability();
       if (!wasActive && !state.frameTimerId && !state.frameRequestInFlight) {
         scheduleNextFrame(0);
       }
@@ -1899,6 +2039,7 @@
         const payload = await response.json();
         state.pointerEnabled = !!payload.remote_pointer_enabled;
         state.keyboardEnabled = !!payload.remote_keyboard_enabled;
+        syncKeyboardCaptureAvailability();
         state.activeFrameIntervalMs = Math.max(120, Number(payload.active_frame_interval_ms) || DEFAULT_ACTIVE_FRAME_INTERVAL_MS);
         state.idleFrameIntervalMs = Math.max(state.activeFrameIntervalMs, Number(payload.idle_frame_interval_ms) || DEFAULT_IDLE_FRAME_INTERVAL_MS);
         state.interactionBoostWindowMs = Math.max(600, Number(payload.interaction_boost_window_ms) || DEFAULT_INTERACTION_BOOST_MS);
@@ -2097,7 +2238,7 @@
     }
 
     async function submitTextInput(options = {}) {
-      if (state.sendingText || !state.keyboardEnabled) {
+      if (state.sendingText || !state.keyboardEnabled || state.liveTyping) {
         return false;
       }
 
@@ -2224,6 +2365,240 @@
       });
     }
 
+    function setLiveTyping(enabled) {
+      const nextEnabled = !!enabled;
+      if (state.liveTyping === nextEnabled) {
+        if (state.keyboardEnabled) {
+          focusTextInput();
+        }
+        return;
+      }
+
+      state.liveTyping = nextEnabled;
+      state.liveTextSnapshot = "";
+      textInput.value = "";
+      state.lastTextInputAt = 0;
+      syncUiState();
+      if (state.keyboardEnabled) {
+        focusTextInput();
+      }
+    }
+
+    function handleLiveBeforeInput(event) {
+      if (
+        !state.liveTyping ||
+        !state.keyboardEnabled ||
+        state.textComposing ||
+        event.isComposing
+      ) {
+        return;
+      }
+
+      const inputType = event.inputType || "";
+      if (inputType === "insertText" && event.data) {
+        event.preventDefault();
+        state.liveInputEventToken += 1;
+        resetLiveTextBox();
+        enqueueLiveText(event.data);
+        return;
+      }
+
+      if (inputType === "insertLineBreak" || inputType === "insertParagraph") {
+        event.preventDefault();
+        state.liveInputEventToken += 1;
+        resetLiveTextBox();
+        enqueueLiveCommand({ type: "key", key: "enter" });
+        return;
+      }
+
+      if (inputType === "deleteContentBackward") {
+        event.preventDefault();
+        state.liveInputEventToken += 1;
+        resetLiveTextBox();
+        enqueueLiveCommand({ type: "key", key: "backspace" });
+        return;
+      }
+
+      if (inputType === "deleteContentForward") {
+        event.preventDefault();
+        state.liveInputEventToken += 1;
+        resetLiveTextBox();
+        enqueueLiveCommand({ type: "key", key: "delete" });
+        return;
+      }
+
+      if (inputType === "insertFromPaste") {
+        const pastedText = event.clipboardData?.getData("text/plain") || event.data || "";
+        if (pastedText) {
+          event.preventDefault();
+          state.liveInputEventToken += 1;
+          resetLiveTextBox();
+          enqueueLiveText(pastedText);
+        }
+      }
+    }
+
+    function handleLiveKeyFallback(event) {
+      if (
+        event.repeat ||
+        event.isComposing ||
+        state.textComposing ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey
+      ) {
+        return;
+      }
+
+      const key = liveFallbackKey(event);
+      if (!key) {
+        return;
+      }
+
+      const token = state.liveInputEventToken;
+      event.preventDefault();
+      window.setTimeout(() => {
+        if (
+          state.liveTyping &&
+          state.keyboardEnabled &&
+          state.liveInputEventToken === token
+        ) {
+          enqueueLiveCommand({ type: "key", key });
+        }
+      }, 0);
+    }
+
+    function liveFallbackKey(event) {
+      switch (event.key) {
+        case "Enter":
+          return event.shiftKey ? "" : "enter";
+        case "Backspace":
+          return "backspace";
+        case "Delete":
+          return "delete";
+        default:
+          return "";
+      }
+    }
+
+    function processLiveTextInput() {
+      if (!state.liveTyping) {
+        state.liveTextSnapshot = textInput.value;
+        return;
+      }
+
+      if (state.textComposing) {
+        return;
+      }
+
+      const previous = state.liveTextSnapshot || "";
+      const current = textInput.value || "";
+      if (current === previous) {
+        return;
+      }
+
+      const delta = liveTextDelta(previous, current);
+      resetLiveTextBox();
+
+      if (delta.text) {
+        state.liveInputEventToken += 1;
+        enqueueLiveText(delta.text);
+      }
+      if (delta.backspaceCount) {
+        state.liveInputEventToken += 1;
+        enqueueRepeatedLiveKey("backspace", delta.backspaceCount);
+      }
+    }
+
+    function liveTextDelta(previous, current) {
+      if (current.startsWith(previous)) {
+        return { text: current.slice(previous.length), backspaceCount: 0 };
+      }
+
+      if (previous.startsWith(current)) {
+        return {
+          text: "",
+          backspaceCount: Array.from(previous.slice(current.length)).length
+        };
+      }
+
+      if (current) {
+        return { text: current, backspaceCount: 0 };
+      }
+
+      return {
+        text: "",
+        backspaceCount: Array.from(previous).length
+      };
+    }
+
+    function resetLiveTextBox() {
+      textInput.value = "";
+      state.liveTextSnapshot = "";
+    }
+
+    function enqueueLiveText(text) {
+      const characters = Array.from(`${text || ""}`);
+      for (let index = 0; index < characters.length; index += LIVE_TEXT_CHUNK_CHARS) {
+        const chunk = characters.slice(index, index + LIVE_TEXT_CHUNK_CHARS).join("");
+        if (!chunk) {
+          continue;
+        }
+
+        const lastCommand = state.liveInputQueue[state.liveInputQueue.length - 1];
+        if (
+          lastCommand?.type === "text" &&
+          Array.from(lastCommand.text).length + Array.from(chunk).length <= LIVE_TEXT_CHUNK_CHARS
+        ) {
+          lastCommand.text += chunk;
+        } else {
+          enqueueLiveCommand({ type: "text", text: chunk });
+        }
+      }
+      flushLiveInputQueue();
+    }
+
+    function enqueueRepeatedLiveKey(key, count) {
+      const safeCount = Math.min(Math.max(Number(count) || 0, 0), LIVE_TEXT_CHUNK_CHARS);
+      for (let index = 0; index < safeCount; index += 1) {
+        enqueueLiveCommand({ type: "key", key });
+      }
+      flushLiveInputQueue();
+    }
+
+    function enqueueLiveCommand(command) {
+      if (!command || !state.keyboardEnabled) {
+        return;
+      }
+      state.liveInputQueue.push(command);
+      flushLiveInputQueue();
+    }
+
+    async function flushLiveInputQueue() {
+      if (state.liveInputFlushInFlight) {
+        return;
+      }
+
+      state.liveInputFlushInFlight = true;
+      try {
+        while (state.liveInputQueue.length) {
+          if (!state.sessionActive || !state.keyboardEnabled) {
+            state.liveInputQueue.length = 0;
+            break;
+          }
+
+          const command = state.liveInputQueue.shift();
+          const result = await sendCommand(command, { reportFailure: true });
+          if (!result.ok) {
+            state.liveInputQueue.length = 0;
+            break;
+          }
+        }
+      } finally {
+        state.liveInputFlushInFlight = false;
+      }
+    }
+
     function markRecentInteraction() {
       state.lastInteractionAt = Date.now();
       if (state.sessionActive) {
@@ -2277,6 +2652,10 @@
 
       if (!isScreenPointerTarget(event.target)) {
         return;
+      }
+
+      if (state.desktopClient && state.keyboardEnabled) {
+        setKeyboardCaptured(true, { manual: true });
       }
 
       if (state.keyboardVisible) {
@@ -2559,6 +2938,7 @@
         !state.desktopClient ||
         !state.sessionActive ||
         !state.keyboardEnabled ||
+        !state.keyboardCaptured ||
         state.pairingBusy ||
         event.defaultPrevented ||
         event.isComposing ||
@@ -2805,6 +3185,7 @@
       textInput.click();
       const cursor = textInput.value.length;
       textInput.setSelectionRange(cursor, cursor);
+      state.liveTextSnapshot = textInput.value;
     }
 
     function toggleKeyboard() {

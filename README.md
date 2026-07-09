@@ -66,7 +66,8 @@ This repository is intentionally aimed at a focused remote-control workflow rath
 - Balanced, Data Saver, and Emergency stream profiles for browser-friendly bandwidth use
 - Mouse move, click, drag, and wheel input
 - Desktop-browser wheel, right-click, and middle-click support
-- Desktop-browser physical keyboard capture plus plain-text and shortcut actions
+- Desktop-browser physical keyboard capture with visible capture/release state plus plain-text and shortcut actions
+- Mobile keyboard compose and live typing modes
 - Mobile-only touch control chrome that stays out of the way on desktop browsers
 - Touch zoom and panning on mobile browsers
 - Fit-to-window scaling with manual zoom in and out from the browser
@@ -205,7 +206,7 @@ On Windows, the repo's Cargo config runs a copied temp executable so a previousl
 
 Desktop browsers:
 
-- Use the physical keyboard directly.
+- Use the physical keyboard directly while the Keys indicator is captured; release or recapture it from the toolbar.
 - Use the normal mouse wheel for vertical scrolling.
 - Use `Shift+wheel` for horizontal scrolling when the local mouse supports it.
 - Use browser zoom controls inside ROV for closer inspection after the default fit-to-window layout loads.
@@ -213,6 +214,7 @@ Desktop browsers:
 Mobile browsers:
 
 - Keep the on-screen keyboard, tool sheet, and touch control buttons.
+- Use Compose for buffered text sends, or Live when you want characters and backspace to reach the host immediately.
 - Use touch panning and pinch gestures inside the frame viewer.
 
 ### Optional: headless runtime with remembered access
@@ -321,8 +323,8 @@ cargo test --all-targets --all-features
 - Opening the browser page is not enough to gain control. A new browser session must be paired with a one-time code generated in the host TUI.
 - A successfully paired browser can optionally become a remembered browser on that device and later refresh its normal session automatically.
 - Headless runtime is intended for already approved browsers; a new browser still needs a host-approved one-time code first.
-- Approved sessions are browser-bound, single-device, host-revocable, and stay paired for up to 24 hours without an idle timeout.
-- Remembered-browser trust survives host restarts until the host revokes it, but it still depends on the browser retaining its local browser storage.
+- Approved sessions are browser-bound, single-device, host-revocable, idle out after 30 minutes without activity, and expire after 24 hours at most.
+- Remembered-browser trust survives host restarts until the host revokes it or the host-side trust record expires, and it still depends on the browser retaining its local browser storage.
 - A successful pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
 - Running ROV elevated forces remote input back to view-only.
 - The host TUI can revoke all remembered browsers immediately.
