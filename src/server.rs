@@ -614,6 +614,7 @@ async fn login(
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> ApiResult<Response> {
+    ensure_same_origin_request(&headers)?;
     let user_agent = headers
         .get(USER_AGENT)
         .and_then(|value| value.to_str().ok())
@@ -666,6 +667,7 @@ async fn pair(
     headers: HeaderMap,
     Json(request): Json<PairRequest>,
 ) -> ApiResult<Response> {
+    ensure_same_origin_request(&headers)?;
     let user_agent = headers
         .get(USER_AGENT)
         .and_then(|value| value.to_str().ok())
@@ -716,6 +718,12 @@ async fn pair_browser(
     headers: HeaderMap,
     Form(request): Form<PairBrowserFormRequest>,
 ) -> Response {
+    if let Err((status, message)) = ensure_same_origin_request(&headers) {
+        let mut response = (status, message).into_response();
+        apply_security_headers(response.headers_mut(), false);
+        return response;
+    }
+
     let remember_browser = request.remember_browser.is_some();
     let user_agent = headers
         .get(USER_AGENT)
@@ -767,6 +775,7 @@ async fn restore_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    ensure_same_origin_request(&headers)?;
     let trusted_browser_token = trusted_browser_cookie(&headers)?;
     let user_agent = headers
         .get(USER_AGENT)
@@ -851,6 +860,7 @@ async fn input(
     headers: HeaderMap,
     Json(request): Json<InputRequest>,
 ) -> ApiResult<StatusCode> {
+    ensure_same_origin_request(&headers)?;
     authorize_input_session(&headers, &state)?;
 
     let monitor = match &request {
@@ -899,6 +909,7 @@ fn ensure_admin_api(
     headers: &HeaderMap,
     state: &AppState,
 ) -> ApiResult<()> {
+    ensure_same_origin_request(headers)?;
     ensure_loopback_admin(remote_addr, headers)?;
     let admin_token = token_value(headers, ADMIN_TOKEN_HEADER_NAME);
     if state.authorize_admin_token(admin_token.as_deref()) {
@@ -907,6 +918,37 @@ fn ensure_admin_api(
         Err((
             StatusCode::UNAUTHORIZED,
             "admin token required or invalid".to_string(),
+        ))
+    }
+}
+
+fn ensure_same_origin_request(headers: &HeaderMap) -> ApiResult<()> {
+    let Some(origin) = headers.get("origin") else {
+        return Ok(());
+    };
+    let origin = origin
+        .to_str()
+        .ok()
+        .and_then(normalize_origin)
+        .ok_or_else(|| {
+            (
+                StatusCode::FORBIDDEN,
+                "valid same-origin request headers are required".to_string(),
+            )
+        })?;
+    let Some(expected_origin) = request_expected_origin(headers) else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "same-origin request headers are required".to_string(),
+        ));
+    };
+
+    if origin == expected_origin {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin state-changing requests are not allowed".to_string(),
         ))
     }
 }
@@ -976,6 +1018,113 @@ fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
                 .map(|(_, value)| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         })
+}
+
+fn request_expected_origin(headers: &HeaderMap) -> Option<String> {
+    request_authority(headers).map(|authority| format!("{}://{authority}", request_scheme(headers)))
+}
+
+fn request_scheme(headers: &HeaderMap) -> String {
+    if let Some(proto) = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(first_forwarded_value)
+        .map(str::to_ascii_lowercase)
+        .filter(|value| value == "http" || value == "https")
+    {
+        return proto;
+    }
+
+    headers
+        .get("forwarded")
+        .and_then(|value| value.to_str().ok())
+        .and_then(forwarded_proto)
+        .unwrap_or_else(|| "http".to_string())
+}
+
+fn request_authority(headers: &HeaderMap) -> Option<String> {
+    if let Some(authority) = headers
+        .get("x-forwarded-host")
+        .and_then(|value| value.to_str().ok())
+        .and_then(first_forwarded_value)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(authority.to_ascii_lowercase());
+    }
+
+    if let Some(authority) = headers
+        .get("forwarded")
+        .and_then(|value| value.to_str().ok())
+        .and_then(forwarded_host)
+    {
+        return Some(authority.to_ascii_lowercase());
+    }
+
+    headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn first_forwarded_value(value: &str) -> Option<&str> {
+    value
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn forwarded_host(value: &str) -> Option<String> {
+    first_forwarded_value(value)?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(name, value)| {
+            if name.trim().eq_ignore_ascii_case("host") {
+                Some(value.trim().trim_matches('"').to_string())
+            } else {
+                None
+            }
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn forwarded_proto(value: &str) -> Option<String> {
+    first_forwarded_value(value)?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(name, value)| {
+            if !name.trim().eq_ignore_ascii_case("proto") {
+                return None;
+            }
+
+            let proto = value.trim().trim_matches('"').to_ascii_lowercase();
+            if proto == "http" || proto == "https" {
+                Some(proto)
+            } else {
+                None
+            }
+        })
+}
+
+fn normalize_origin(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let (scheme, rest) = trimmed.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+
+    let authority = rest
+        .split('/')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.to_ascii_lowercase()
+    ))
 }
 
 fn session_error_response(error: SessionAuthError) -> (StatusCode, String) {
@@ -1157,14 +1306,7 @@ fn pair_complete_html(grant: &SessionGrant) -> String {
 }
 
 fn request_is_https(headers: &HeaderMap) -> bool {
-    headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("https"))
-        || headers
-            .get("forwarded")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.to_ascii_lowercase().contains("proto=https"))
+    request_scheme(headers) == "https"
 }
 
 fn trusted_browser_cookie_header(
@@ -1380,7 +1522,7 @@ fn tailscale_port_is_in_use(err: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_loopback_admin, tailscale_port_is_in_use};
+    use super::{ensure_loopback_admin, ensure_same_origin_request, tailscale_port_is_in_use};
     use axum::http::{HeaderMap, HeaderValue};
     use std::io::{Error, ErrorKind};
     use std::net::{Ipv4Addr, SocketAddr};
@@ -1414,5 +1556,52 @@ mod tests {
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
 
         assert!(ensure_loopback_admin(loopback, &headers).is_err());
+    }
+
+    #[test]
+    fn same_origin_requests_accept_matching_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("127.0.0.1:45080"));
+        headers.insert("origin", HeaderValue::from_static("http://127.0.0.1:45080"));
+
+        assert!(ensure_same_origin_request(&headers).is_ok());
+    }
+
+    #[test]
+    fn same_origin_requests_accept_forwarded_https_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("127.0.0.1:45080"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("rov.example.test"),
+        );
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://rov.example.test"),
+        );
+
+        assert!(ensure_same_origin_request(&headers).is_ok());
+    }
+
+    #[test]
+    fn same_origin_requests_reject_cross_origin_posts() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("127.0.0.1:45080"));
+        headers.insert(
+            "origin",
+            HeaderValue::from_static("https://attacker.example"),
+        );
+
+        assert!(ensure_same_origin_request(&headers).is_err());
+    }
+
+    #[test]
+    fn same_origin_requests_reject_invalid_origin_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("127.0.0.1:45080"));
+        headers.insert("origin", HeaderValue::from_static("null"));
+
+        assert!(ensure_same_origin_request(&headers).is_err());
     }
 }

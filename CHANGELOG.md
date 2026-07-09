@@ -24,6 +24,8 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Form-post browser approval plus explicit approval failure states for cleaner first-pair recovery.
 - Browser-bound session and remembered-browser token headers for reverse-proxy deployments where background cookie handling is unreliable.
 - Desktop-browser physical keyboard capture, broader special-key coverage, and mobile-only tool chrome.
+- Visible desktop keyboard capture/release controls in the browser client.
+- Mobile live typing mode alongside the existing compose-and-send text mode.
 
 ### Changed
 
@@ -35,3 +37,5 @@ The format is inspired by Keep a Changelog and this project aims to follow Seman
 - Stopped the browser client from polling frame and status endpoints while it is still waiting for approval, which makes first-pair flows quieter and more reliable.
 - Switched the browser viewer to fit-to-window scaling first, with manual zoom layered on top.
 - Added `Shift+wheel` horizontal-scroll fallback for desktop browsers.
+- Added a 30-minute remote-session idle timeout and host-side remembered-browser expiration enforcement.
+- Rejected browser state-changing requests when an `Origin` header does not match the request origin.

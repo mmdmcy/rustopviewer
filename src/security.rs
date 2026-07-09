@@ -18,8 +18,9 @@ pub const MAX_INPUTS_PER_SECOND: u16 = 90;
 pub const ACCESS_PASSWORD_MIN_LEN: usize = 12;
 pub const ACCESS_PASSWORD_LOCKOUT: Duration = Duration::from_secs(60);
 pub const PAIR_CODE_TTL: Duration = Duration::from_secs(10 * 60);
+pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const SESSION_MAX_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
-pub const TRUSTED_BROWSER_MAX_LIFETIME: Duration = Duration::from_secs(5 * 365 * 24 * 60 * 60);
+pub const TRUSTED_BROWSER_MAX_LIFETIME: Duration = Duration::from_secs(180 * 24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct PairCodeSnapshot {
@@ -428,6 +429,15 @@ impl SessionStore {
             .ok_or(TrustedBrowserAuthError::Invalid)?;
 
         let now = SystemTime::now();
+        if self.trusted_browsers[index].is_expired(now) {
+            let expired = self.trusted_browsers.remove(index);
+            if self.persist_trusted_browsers().is_err() {
+                self.trusted_browsers.insert(index, expired);
+                return Err(TrustedBrowserAuthError::Storage);
+            }
+            return Err(TrustedBrowserAuthError::Invalid);
+        }
+
         let user_agent = normalize_user_agent(user_agent);
         let previous = self.trusted_browsers[index].clone();
         self.trusted_browsers[index].last_seen_at = now;
@@ -636,6 +646,10 @@ impl TrustedBrowserRecord {
         constant_time_eq(&self.token_hash, token_hash)
     }
 
+    fn is_expired(&self, now: SystemTime) -> bool {
+        elapsed_since(self.created_at, now) >= TRUSTED_BROWSER_MAX_LIFETIME
+    }
+
     fn snapshot(&self, now: SystemTime) -> TrustedBrowserSnapshot {
         TrustedBrowserSnapshot {
             id: self.id.clone(),
@@ -696,13 +710,16 @@ impl RemoteSession {
     }
 
     fn is_expired(&self, now: SystemTime) -> bool {
-        now >= self.expires_at
+        now >= self.expires_at || elapsed_since(self.last_seen_at, now) >= SESSION_IDLE_TIMEOUT
     }
 
     fn snapshot(&self, now: SystemTime) -> SessionSnapshot {
         SessionSnapshot {
             expires_in: duration_until(self.expires_at, now),
-            idle_expires_in: None,
+            idle_expires_in: Some(duration_until(
+                self.last_seen_at + SESSION_IDLE_TIMEOUT,
+                now,
+            )),
             bytes_sent: self.bytes_sent,
             frame_responses: self.frame_responses,
             cached_frame_hits: self.cached_frame_hits,
@@ -850,9 +867,9 @@ fn unix_to_system_time(seconds: u64) -> SystemTime {
 #[cfg(test)]
 mod session_tests {
     use super::{
-        MAX_ACCESS_PASSWORD_ATTEMPTS, MAX_PAIR_ATTEMPTS, RemoteSession, SESSION_MAX_LIFETIME,
-        SessionStore, TrustedBrowserAuthError, TrustedBrowserStore,
-        access_password_config_from_plaintext,
+        MAX_ACCESS_PASSWORD_ATTEMPTS, MAX_PAIR_ATTEMPTS, RemoteSession, SESSION_IDLE_TIMEOUT,
+        SESSION_MAX_LIFETIME, SessionStore, TRUSTED_BROWSER_MAX_LIFETIME, TrustedBrowserAuthError,
+        TrustedBrowserStore, access_password_config_from_plaintext,
     };
     use std::{
         fs,
@@ -864,7 +881,7 @@ mod session_tests {
         RemoteSession {
             id: "test-session".to_string(),
             expires_at: now + SESSION_MAX_LIFETIME,
-            last_seen_at: now - Duration::from_secs(9 * 60 * 60),
+            last_seen_at: now,
             input_window_started_at: now,
             input_count_in_window: 0,
             user_agent: None,
@@ -890,12 +907,15 @@ mod session_tests {
     }
 
     #[test]
-    fn remembered_session_does_not_idle_out() {
+    fn active_session_expires_after_idle_timeout() {
         let now = SystemTime::now();
         let session = sample_session(now);
-        let later = now + Duration::from_secs(10 * 60 * 60);
-        assert!(!session.is_expired(later));
-        assert!(session.snapshot(later).idle_expires_in.is_none());
+        let before_timeout = now + SESSION_IDLE_TIMEOUT - Duration::from_secs(1);
+        let after_timeout = now + SESSION_IDLE_TIMEOUT + Duration::from_secs(1);
+
+        assert!(!session.is_expired(before_timeout));
+        assert!(session.is_expired(after_timeout));
+        assert!(session.snapshot(now).idle_expires_in.is_some());
     }
 
     #[test]
@@ -944,6 +964,34 @@ mod session_tests {
             .restore_trusted_browser_session("not-a-real-token", None)
             .expect_err("unknown trusted browser tokens must be rejected");
         assert_eq!(error, TrustedBrowserAuthError::Invalid);
+
+        if let Some(parent) = path.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn expired_trusted_browser_is_rejected_and_removed() {
+        let path = temp_store_path("expired");
+        let store = TrustedBrowserStore::new(path.clone()).expect("store should initialize");
+        let mut sessions = SessionStore::new(store).expect("session store should initialize");
+        let pair = sessions.generate_pair_code().code;
+        let grant = sessions
+            .issue_pairing_session(&pair, Some("TestBrowser/1.0".to_string()), true)
+            .expect("pairing should succeed");
+        let trusted_token = grant
+            .trusted_browser_token
+            .expect("pairing should remember the browser");
+
+        sessions.trusted_browsers[0].created_at =
+            SystemTime::now() - TRUSTED_BROWSER_MAX_LIFETIME - Duration::from_secs(1);
+
+        let error = sessions
+            .restore_trusted_browser_session(&trusted_token, Some("TestBrowser/1.0".to_string()))
+            .expect_err("expired trusted browser should be rejected");
+
+        assert!(matches!(error, TrustedBrowserAuthError::Invalid));
+        assert_eq!(sessions.trusted_browser_count(), 0);
 
         if let Some(parent) = path.parent() {
             let _ = fs::remove_dir_all(parent);
