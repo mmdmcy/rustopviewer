@@ -3,6 +3,7 @@ mod config;
 mod input;
 mod model;
 mod network;
+mod oidc;
 mod platform;
 mod security;
 mod server;
@@ -12,7 +13,7 @@ mod tui;
 use anyhow::{Context, Result};
 use security::TrustedBrowserStore;
 use serde::Deserialize;
-use state::AppState;
+use state::{AppState, RuntimeAuth};
 use std::{
     collections::HashMap,
     env, fs,
@@ -56,10 +57,17 @@ fn main() -> Result<()> {
         input_tx,
         trusted_browser_store,
         is_elevated,
-        env_bootstrap
-            .admin_token
-            .as_deref()
-            .map(security::hash_admin_token),
+        RuntimeAuth {
+            admin_token_hash: env_bootstrap
+                .admin_token
+                .as_deref()
+                .map(security::hash_admin_token),
+            masterdale_token_hash: env_bootstrap
+                .masterdale_token
+                .as_deref()
+                .map(security::hash_admin_token),
+            oidc: env_bootstrap.oidc.clone(),
+        },
     )?);
     state
         .ensure_valid_selected_monitor()
@@ -111,6 +119,8 @@ struct EnvBootstrap {
     device_code: Option<String>,
     access_password: Option<String>,
     admin_token: Option<String>,
+    masterdale_token: Option<String>,
+    oidc: Option<oidc::OidcConfig>,
 }
 
 impl CliOptions {
@@ -127,17 +137,33 @@ fn load_project_env() -> Result<EnvBootstrap> {
     let device_code = env_value(&values, "ROV_DEVICE_CODE");
     let access_password = env_value(&values, "ROV_ACCESS_PASSWORD");
     let admin_token = env_value(&values, "ROV_ADMIN_TOKEN");
+    let masterdale_token =
+        env_value(&values, "ROV_MASTERDALE_TOKEN").or_else(|| env_value(&values, "DALE_TOKEN"));
+    let oidc = oidc::OidcConfig::from_values(
+        env_value(&values, "ROV_OIDC_ISSUER"),
+        env_value(&values, "ROV_OIDC_CLIENT_ID"),
+        env_value(&values, "ROV_OIDC_CLIENT_SECRET"),
+        env_value(&values, "ROV_OIDC_REDIRECT_URL"),
+        env_value(&values, "ROV_OIDC_ALLOWED_SUBJECTS"),
+    )?;
 
     if let Some(token) = admin_token.as_deref()
         && token.chars().count() < 16
     {
         anyhow::bail!("ROV_ADMIN_TOKEN must be at least 16 characters");
     }
+    if let Some(token) = masterdale_token.as_deref()
+        && token.chars().count() < 16
+    {
+        anyhow::bail!("ROV_MASTERDALE_TOKEN/DALE_TOKEN must be at least 16 characters");
+    }
 
     Ok(EnvBootstrap {
         device_code,
         access_password,
         admin_token,
+        masterdale_token,
+        oidc,
     })
 }
 

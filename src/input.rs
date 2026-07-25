@@ -134,6 +134,10 @@ pub enum RemoteKey {
     Alt,
     #[serde(alias = "windows")]
     Meta,
+    MediaPlayPause,
+    VolumeMute,
+    VolumeDown,
+    VolumeUp,
     #[serde(rename = "a")]
     A,
     #[serde(rename = "b")]
@@ -457,6 +461,10 @@ fn to_enigo_key(key: RemoteKey) -> Key {
         RemoteKey::Shift => Key::Shift,
         RemoteKey::Alt => Key::Alt,
         RemoteKey::Meta => Key::Meta,
+        RemoteKey::MediaPlayPause => Key::MediaPlayPause,
+        RemoteKey::VolumeMute => Key::VolumeMute,
+        RemoteKey::VolumeDown => Key::VolumeDown,
+        RemoteKey::VolumeUp => Key::VolumeUp,
         RemoteKey::A => Key::Unicode('a'),
         RemoteKey::B => Key::Unicode('b'),
         RemoteKey::C => Key::Unicode('c'),

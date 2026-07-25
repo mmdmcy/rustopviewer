@@ -36,6 +36,9 @@ fn capture_loop(state: Arc<AppState>) {
     let mut last_inventory_refresh = Instant::now() - Duration::from_secs(30);
 
     loop {
+        let settings = state.capture_settings();
+        state.wait_for_capture_demand(settings.capture_interval);
+
         let requested_monitor_id = state.selected_monitor_id();
         let needs_refresh = current_monitor.is_none()
             || current_monitor_id != requested_monitor_id
@@ -69,7 +72,6 @@ fn capture_loop(state: Arc<AppState>) {
             continue;
         };
 
-        let settings = state.capture_settings();
         match capture_monitor_frame(monitor, settings.jpeg_quality, settings.max_frame_width) {
             Ok(frame) => state.update_frame(frame),
             Err(err) => {
@@ -78,8 +80,6 @@ fn capture_loop(state: Arc<AppState>) {
                 current_monitor_id = None;
             }
         }
-
-        thread::sleep(settings.capture_interval);
     }
 }
 

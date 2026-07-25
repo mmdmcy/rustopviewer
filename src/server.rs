@@ -6,8 +6,9 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
-            CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH,
-            InvalidHeaderValue, LOCATION, PRAGMA, REFERRER_POLICY, SET_COOKIE, USER_AGENT,
+            AUTHORIZATION, CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, ETAG,
+            IF_NONE_MATCH, InvalidHeaderValue, LOCATION, PRAGMA, REFERRER_POLICY, SET_COOKIE,
+            USER_AGENT,
         },
     },
     response::{IntoResponse, Response},
@@ -29,7 +30,7 @@ use crate::{
     config::StreamProfile,
     input::{self, InputRequest},
     model::{DeviceInfoResponse, MonitorInfo},
-    network,
+    network, oidc,
     security::{
         IssueAccessPasswordError, IssuePairingError, SESSION_COOKIE_NAME, SESSION_MAX_LIFETIME,
         SessionAuthError, SessionGrant, TRUSTED_BROWSER_COOKIE_NAME, TRUSTED_BROWSER_MAX_LIFETIME,
@@ -45,6 +46,11 @@ const ADMIN_HTML: &str = include_str!("../assets/admin.html");
 const SESSION_HEADER_NAME: &str = "x-rov-session";
 const TRUSTED_BROWSER_HEADER_NAME: &str = "x-rov-trusted";
 const ADMIN_TOKEN_HEADER_NAME: &str = "x-rov-admin-token";
+
+enum ViewerAuthorization {
+    Masterdale,
+    Session(String),
+}
 
 pub fn spawn_server(state: Arc<AppState>) {
     thread::spawn(move || {
@@ -97,6 +103,8 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
         .route("/api/admin/panic-stop", post(admin_panic_stop))
         .route("/api/device", get(device_info))
         .route("/api/login", post(login))
+        .route("/auth/oidc/start", get(oidc::start))
+        .route("/auth/oidc/callback", get(oidc::callback))
         .route("/api/pair", post(pair))
         .route("/pair/browser", post(pair_browser))
         .route("/api/session/restore", post(restore_session))
@@ -797,14 +805,16 @@ async fn restore_session(
 }
 
 async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
-    let session_id = authorize_session(&headers, &state)?;
+    let authorization = authorize_viewer(&headers, &state)?;
     let payload = serde_json::to_vec(&state.status_response()).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to serialize the session status".to_string(),
         )
     })?;
-    state.record_status_response(&session_id, payload.len());
+    if let ViewerAuthorization::Session(session_id) = &authorization {
+        state.record_status_response(session_id, payload.len());
+    }
 
     let mut response = Response::new(Body::from(payload));
     response.headers_mut().insert(
@@ -816,7 +826,7 @@ async fn status(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiRe
 }
 
 async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiResult<Response> {
-    let session_id = authorize_session(&headers, &state)?;
+    let authorization = authorize_viewer(&headers, &state)?;
 
     let frame = state.latest_frame().ok_or_else(|| {
         (
@@ -835,7 +845,9 @@ async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiRes
         })?;
         response.headers_mut().insert(ETAG, etag);
         apply_security_headers(response.headers_mut(), false);
-        state.record_frame_response(&session_id, 0, true);
+        if let ViewerAuthorization::Session(session_id) = &authorization {
+            state.record_frame_response(session_id, 0, true);
+        }
         return Ok(response);
     }
 
@@ -850,7 +862,9 @@ async fn frame(State(state): State<Arc<AppState>>, headers: HeaderMap) -> ApiRes
     })?;
     headers.insert(ETAG, etag);
     apply_security_headers(headers, false);
-    state.record_frame_response(&session_id, frame.byte_len, false);
+    if let ViewerAuthorization::Session(session_id) = &authorization {
+        state.record_frame_response(session_id, frame.byte_len, false);
+    }
 
     Ok(response)
 }
@@ -861,7 +875,7 @@ async fn input(
     Json(request): Json<InputRequest>,
 ) -> ApiResult<StatusCode> {
     ensure_same_origin_request(&headers)?;
-    authorize_input_session(&headers, &state)?;
+    authorize_viewer_input(&headers, &state)?;
 
     let monitor = match &request {
         InputRequest::Move { .. } | InputRequest::Click { .. } | InputRequest::Button { .. } => {
@@ -888,20 +902,66 @@ async fn input(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn authorize_session(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
+fn authorize_viewer(headers: &HeaderMap, state: &AppState) -> ApiResult<ViewerAuthorization> {
+    if let Some(token) = bearer_token(headers) {
+        return if state.authorize_masterdale_token(&token) {
+            state.note_viewer_activity();
+            Ok(ViewerAuthorization::Masterdale)
+        } else {
+            Err((
+                StatusCode::UNAUTHORIZED,
+                "Masterdale token required or invalid".to_string(),
+            ))
+        };
+    }
+
     let session_id = session_cookie(headers)?;
-    state
+    let authorization = state
         .authorize_session(&session_id)
-        .map(|_| session_id)
-        .map_err(session_error_response)
+        .map(|_| ViewerAuthorization::Session(session_id))
+        .map_err(session_error_response)?;
+    state.note_viewer_activity();
+    Ok(authorization)
 }
 
-fn authorize_input_session(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
+fn authorize_viewer_input(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
+    if let Some(token) = bearer_token(headers) {
+        if !state.authorize_masterdale_token(&token) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "Masterdale token required or invalid".to_string(),
+            ));
+        }
+        state.note_viewer_activity();
+        return if state.authorize_masterdale_input(&token) {
+            Ok(())
+        } else {
+            Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many remote input requests".to_string(),
+            ))
+        };
+    }
+
     let session_id = session_cookie(headers)?;
-    state
+    let authorization = state
         .authorize_input_session(&session_id)
         .map(|_| ())
-        .map_err(session_error_response)
+        .map_err(session_error_response);
+    if authorization.is_ok() {
+        state.note_viewer_activity();
+    }
+    authorization
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn ensure_admin_api(
@@ -1222,7 +1282,7 @@ fn redirect_with_pair_error(code: &str) -> Response {
     response
 }
 
-fn apply_session_cookies(
+pub(crate) fn apply_session_cookies(
     headers: &mut HeaderMap,
     grant: &SessionGrant,
     secure_cookie: bool,
@@ -1305,7 +1365,7 @@ fn pair_complete_html(grant: &SessionGrant) -> String {
     )
 }
 
-fn request_is_https(headers: &HeaderMap) -> bool {
+pub(crate) fn request_is_https(headers: &HeaderMap) -> bool {
     request_scheme(headers) == "https"
 }
 
@@ -1522,7 +1582,9 @@ fn tailscale_port_is_in_use(err: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_loopback_admin, ensure_same_origin_request, tailscale_port_is_in_use};
+    use super::{
+        bearer_token, ensure_loopback_admin, ensure_same_origin_request, tailscale_port_is_in_use,
+    };
     use axum::http::{HeaderMap, HeaderValue};
     use std::io::{Error, ErrorKind};
     use std::net::{Ipv4Addr, SocketAddr};
@@ -1537,6 +1599,31 @@ mod tests {
     fn unrelated_listener_errors_are_not_suppressed() {
         let err = Error::from(ErrorKind::PermissionDenied);
         assert!(!tailscale_port_is_in_use(&err));
+    }
+
+    #[test]
+    fn masterdale_bearer_token_is_read_without_whitespace() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer persistent-masterdale-token"),
+        );
+
+        assert_eq!(
+            bearer_token(&headers).as_deref(),
+            Some("persistent-masterdale-token")
+        );
+    }
+
+    #[test]
+    fn non_bearer_authorization_is_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
+
+        assert!(bearer_token(&headers).is_none());
     }
 
     #[test]

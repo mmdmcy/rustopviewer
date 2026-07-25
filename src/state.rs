@@ -1,22 +1,35 @@
 use anyhow::{Result, anyhow};
-use parking_lot::RwLock;
+use parking_lot::{Condvar, Mutex, RwLock};
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc::Sender},
+    time::{Duration, Instant},
 };
 
 use crate::{
     config::{AppConfig, ConfigStore, StreamProfile, StreamSettings, normalize_device_code},
     input::InputCommand,
     model::{DeviceInfoResponse, LatestFrame, MonitorInfo, StatusResponse},
+    oidc::OidcConfig,
     platform,
     security::{
-        IssueAccessPasswordError, IssuePairingError, PairCodeSnapshot, SessionAuthError,
-        SessionGrant, SessionSnapshot, SessionStore, TrustedBrowserAuthError,
+        IssueAccessPasswordError, IssuePairingError, MAX_INPUTS_PER_SECOND, PairCodeSnapshot,
+        SessionAuthError, SessionGrant, SessionSnapshot, SessionStore, TrustedBrowserAuthError,
         TrustedBrowserSnapshot, TrustedBrowserStore, access_password_config_from_plaintext,
         admin_token_matches_hash,
     },
 };
+
+struct MasterdaleInputWindow {
+    started_at: Instant,
+    count: u16,
+}
+
+pub struct RuntimeAuth {
+    pub admin_token_hash: Option<String>,
+    pub masterdale_token_hash: Option<String>,
+    pub oidc: Option<OidcConfig>,
+}
 
 pub struct AppState {
     config_store: ConfigStore,
@@ -28,6 +41,11 @@ pub struct AppState {
     sessions: RwLock<SessionStore>,
     is_elevated: bool,
     admin_token_hash: Option<String>,
+    masterdale_token_hash: Option<String>,
+    oidc: Option<OidcConfig>,
+    masterdale_input_window: RwLock<MasterdaleInputWindow>,
+    capture_active_until: Mutex<Instant>,
+    capture_wake: Condvar,
 }
 
 impl AppState {
@@ -38,7 +56,7 @@ impl AppState {
         input_tx: Sender<InputCommand>,
         trusted_browser_store: TrustedBrowserStore,
         is_elevated: bool,
-        admin_token_hash: Option<String>,
+        auth: RuntimeAuth,
     ) -> Result<Self> {
         config.normalize();
 
@@ -51,7 +69,15 @@ impl AppState {
             input_tx,
             sessions: RwLock::new(SessionStore::new(trusted_browser_store)?),
             is_elevated,
-            admin_token_hash,
+            admin_token_hash: auth.admin_token_hash,
+            masterdale_token_hash: auth.masterdale_token_hash,
+            oidc: auth.oidc,
+            masterdale_input_window: RwLock::new(MasterdaleInputWindow {
+                started_at: Instant::now(),
+                count: 0,
+            }),
+            capture_active_until: Mutex::new(Instant::now()),
+            capture_wake: Condvar::new(),
         })
     }
 
@@ -93,6 +119,61 @@ impl AppState {
                 .map(|token| admin_token_matches_hash(token_hash, token))
                 .unwrap_or(false),
             None => true,
+        }
+    }
+
+    pub fn authorize_masterdale_token(&self, token: &str) -> bool {
+        self.masterdale_token_hash
+            .as_deref()
+            .is_some_and(|token_hash| admin_token_matches_hash(token_hash, token))
+    }
+
+    pub fn authorize_masterdale_input(&self, token: &str) -> bool {
+        if !self.authorize_masterdale_token(token) {
+            return false;
+        }
+
+        let mut window = self.masterdale_input_window.write();
+        if window.started_at.elapsed() >= Duration::from_secs(1) {
+            window.started_at = Instant::now();
+            window.count = 0;
+        }
+        if window.count >= MAX_INPUTS_PER_SECOND {
+            return false;
+        }
+        window.count = window.count.saturating_add(1);
+        true
+    }
+
+    pub fn oidc_config(&self) -> Option<&OidcConfig> {
+        self.oidc.as_ref()
+    }
+
+    pub fn issue_identity_session(&self, user_agent: Option<String>) -> SessionGrant {
+        self.sessions.write().issue_identity_session(user_agent)
+    }
+
+    pub fn note_viewer_activity(&self) {
+        let now = Instant::now();
+        let mut active_until = self.capture_active_until.lock();
+        let was_inactive = *active_until <= now;
+        *active_until = now + Duration::from_secs(3);
+        if was_inactive {
+            self.capture_wake.notify_one();
+        }
+    }
+
+    pub fn wait_for_capture_demand(&self, interval: Duration) {
+        let mut active_until = self.capture_active_until.lock();
+        loop {
+            let now = Instant::now();
+            if *active_until > now {
+                let remaining = active_until.saturating_duration_since(now);
+                self.capture_wake
+                    .wait_for(&mut active_until, interval.min(remaining));
+                return;
+            }
+            self.capture_wake.wait(&mut active_until);
         }
     }
 
@@ -473,6 +554,7 @@ impl AppState {
             os: platform::os_label(),
             os_family: platform::os_family(),
             password_enabled: self.access_password_configured(),
+            oidc_enabled: self.oidc.is_some(),
         }
     }
 }
