@@ -265,6 +265,16 @@ impl SessionStore {
         self.session = None;
     }
 
+    pub fn issue_identity_session(&mut self, user_agent: Option<String>) -> SessionGrant {
+        let session = RemoteSession::issue(SystemTime::now(), normalize_user_agent(user_agent));
+        let session_id = session.id.clone();
+        self.session = Some(session);
+        SessionGrant {
+            session_id,
+            trusted_browser_token: None,
+        }
+    }
+
     pub fn clear_trusted_browsers(&mut self) -> Result<usize> {
         let count = self.trusted_browsers.len();
         self.trusted_browsers.clear();

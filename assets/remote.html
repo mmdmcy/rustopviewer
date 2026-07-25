@@ -719,6 +719,16 @@
             <div class="device-list" id="currentDeviceList"></div>
             <div class="device-list" id="rememberedDeviceList"></div>
             <div class="empty-devices" id="rememberedDeviceEmpty" hidden>No other devices are remembered in this browser yet.</div>
+            <button class="action" id="linuxmiceAccessButton" type="button" hidden>Sign in with LinuxMice</button>
+            <button class="action" id="masterdaleAccessButton" type="button">Use Masterdale Token</button>
+          </div>
+          <div class="access-panel" id="masterdalePanel" hidden>
+            <input class="access-input" id="masterdaleTokenInput" type="password" autocomplete="current-password" placeholder="Masterdale token">
+            <div class="panel-actions">
+              <button class="action" id="masterdaleLoginButton">Connect</button>
+              <button class="action" id="masterdaleBackButton">Back</button>
+            </div>
+            <div class="pair-hint" id="masterdaleHint">Paste the same bearer token Masterdale uses. This browser remembers it for this site. The host `.env` alone cannot log the browser in; use LinuxMice sign-in to skip pasting.</div>
           </div>
           <div class="access-panel" id="passwordPanel" hidden>
             <input class="access-input" id="deviceCodeInput" type="text" autocomplete="off" maxlength="32" placeholder="Device code">
@@ -776,6 +786,10 @@
           </div>
 
           <div class="toolbar-grid">
+            <button class="action" data-key="media_play_pause">Play / Pause</button>
+            <button class="action" data-key="volume_mute">Mute</button>
+            <button class="action" data-key="volume_down">Volume -</button>
+            <button class="action" data-key="volume_up">Volume +</button>
             <button class="action" data-shortcut="meta">Start</button>
             <button class="action" data-shortcut="alt+tab">Alt+Tab</button>
             <button class="action" data-shortcut="meta+r">Win+R</button>
@@ -868,6 +882,7 @@
     const LIVE_TEXT_CHUNK_CHARS = 256;
     const SESSION_STORAGE_KEY = "rov_session";
     const TRUSTED_STORAGE_KEY = "rov_trusted";
+    const MASTERDALE_STORAGE_KEY = "masterdale.dashboard.token";
     const DEVICE_DIRECTORY_KEY = "rov_devices";
     const DESKTOP_INPUT_MEDIA_QUERY = "(hover: hover) and (pointer: fine)";
 
@@ -905,6 +920,8 @@
       keyboardEnabled: false,
       sessionActive: false,
       sessionToken: "",
+      masterdaleToken: "",
+      masterdaleBusy: false,
       pairingBusy: false,
       passwordBusy: false,
       trustedRestoreInFlight: false,
@@ -938,6 +955,13 @@
     const currentDeviceList = document.getElementById("currentDeviceList");
     const rememberedDeviceList = document.getElementById("rememberedDeviceList");
     const rememberedDeviceEmpty = document.getElementById("rememberedDeviceEmpty");
+    const linuxmiceAccessButton = document.getElementById("linuxmiceAccessButton");
+    const masterdaleAccessButton = document.getElementById("masterdaleAccessButton");
+    const masterdalePanel = document.getElementById("masterdalePanel");
+    const masterdaleTokenInput = document.getElementById("masterdaleTokenInput");
+    const masterdaleLoginButton = document.getElementById("masterdaleLoginButton");
+    const masterdaleBackButton = document.getElementById("masterdaleBackButton");
+    const masterdaleHint = document.getElementById("masterdaleHint");
     const passwordPanel = document.getElementById("passwordPanel");
     const deviceCodeInput = document.getElementById("deviceCodeInput");
     const accessPasswordInput = document.getElementById("accessPasswordInput");
@@ -1093,6 +1117,9 @@
       if (state.trustedToken) {
         headers["X-ROV-Trusted"] = state.trustedToken;
       }
+      if (state.masterdaleToken) {
+        headers["Authorization"] = `Bearer ${state.masterdaleToken}`;
+      }
       return headers;
     }
 
@@ -1106,9 +1133,11 @@
           throw new Error(`device ${response.status}`);
         }
         state.currentDevice = await response.json();
+        linuxmiceAccessButton.hidden = !state.currentDevice.oidc_enabled;
         renderDashboard();
       } catch {
         state.currentDevice = null;
+        linuxmiceAccessButton.hidden = true;
         renderDashboard();
       }
     }
@@ -1297,6 +1326,7 @@
     function boot() {
       state.sessionToken = readStoredToken(SESSION_STORAGE_KEY);
       state.trustedToken = readStoredToken(TRUSTED_STORAGE_KEY);
+      state.masterdaleToken = readStoredToken(MASTERDALE_STORAGE_KEY);
       state.trustedRestoreAvailable = !!state.trustedToken;
       state.rememberedDevices = readRememberedDevices();
       state.desktopClient = detectDesktopClient();
@@ -1442,6 +1472,22 @@
         attemptPasswordLogin();
       });
 
+      bindTap(masterdaleAccessButton, () => {
+        showMasterdaleLogin();
+      });
+
+      bindTap(linuxmiceAccessButton, () => {
+        window.location.assign(apiUrl("auth/oidc/start"));
+      });
+
+      bindTap(masterdaleLoginButton, () => {
+        attemptMasterdaleLogin();
+      });
+
+      bindTap(masterdaleBackButton, () => {
+        showDashboard();
+      });
+
       bindTap(passwordBackButton, () => {
         showDashboard();
       });
@@ -1457,6 +1503,13 @@
         if (event.key === "Enter") {
           event.preventDefault();
           attemptPasswordLogin();
+        }
+      });
+
+      masterdaleTokenInput?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          attemptMasterdaleLogin();
         }
       });
 
@@ -1974,7 +2027,7 @@
     }
 
     function shouldPollStatus() {
-      return state.sessionActive || state.trustedRestoreAvailable;
+      return state.sessionActive || state.trustedRestoreAvailable || !!state.masterdaleToken;
     }
 
     function scheduleNextStatus(delayMs = STATUS_INTERVAL_MS) {
@@ -2017,6 +2070,10 @@
         });
 
         if (response.status === 401) {
+          if (state.masterdaleToken) {
+            rejectMasterdaleToken();
+            return false;
+          }
           state.sessionToken = "";
           syncStoredTokensFromState();
           if (allowTrustedRestore && await restoreTrustedSession()) {
@@ -2127,6 +2184,11 @@
         });
 
         if (response.status === 401) {
+          if (state.masterdaleToken) {
+            keepStreaming = false;
+            rejectMasterdaleToken();
+            return;
+          }
           state.sessionToken = "";
           syncStoredTokensFromState();
           if (allowTrustedRestore && await restoreTrustedSession()) {
@@ -2291,6 +2353,14 @@
         });
 
         if (response.status === 401) {
+          if (state.masterdaleToken) {
+            rejectMasterdaleToken();
+            return {
+              ok: false,
+              status: response.status,
+              message: "The Masterdale token was rejected."
+            };
+          }
           state.sessionToken = "";
           syncStoredTokensFromState();
           if (allowTrustedRestore && await restoreTrustedSession()) {
@@ -3444,6 +3514,7 @@
       overlayTitle.textContent = title;
       overlayMessage.textContent = message;
       dashboardPanel.hidden = true;
+      masterdalePanel.hidden = true;
       passwordPanel.hidden = true;
       pairingPanel.hidden = true;
       frameOverlay.classList.remove("hidden");
@@ -3452,6 +3523,7 @@
     function hideOverlay() {
       frameOverlay.classList.add("hidden");
       dashboardPanel.hidden = true;
+      masterdalePanel.hidden = true;
       passwordPanel.hidden = true;
       pairingPanel.hidden = true;
     }
@@ -3462,6 +3534,7 @@
       overlayMessage.textContent = message;
       renderDashboard();
       dashboardPanel.hidden = false;
+      masterdalePanel.hidden = true;
       passwordPanel.hidden = true;
       pairingPanel.hidden = true;
       frameOverlay.classList.remove("hidden");
@@ -3480,6 +3553,7 @@
         : "Enter the unattended access password for this host.";
       passwordLoginButton.disabled = device?.password_enabled === false;
       dashboardPanel.hidden = true;
+      masterdalePanel.hidden = true;
       passwordPanel.hidden = false;
       pairingPanel.hidden = true;
       frameOverlay.classList.remove("hidden");
@@ -3498,9 +3572,72 @@
       overlayMessage.textContent = message;
       pairHint.textContent = hint || "Generate a fresh one-time access code in the host console.";
       dashboardPanel.hidden = true;
+      masterdalePanel.hidden = true;
       passwordPanel.hidden = true;
       pairingPanel.hidden = false;
       frameOverlay.classList.remove("hidden");
+    }
+
+    function rejectMasterdaleToken() {
+      const rejectedToken = state.masterdaleToken;
+      state.masterdaleToken = "";
+      setSessionActive(false);
+      state.pointerEnabled = false;
+      state.keyboardEnabled = false;
+      syncUiState();
+      showMasterdaleLogin(
+        "That Masterdale token was rejected. Paste the current token and try again.",
+        rejectedToken
+      );
+    }
+
+    function showMasterdaleLogin(
+      hint = "Paste the same bearer token Masterdale uses. This browser remembers it for this site. Host .env alone cannot log the browser in; use LinuxMice sign-in to skip pasting.",
+      token = state.masterdaleToken || readStoredToken(MASTERDALE_STORAGE_KEY)
+    ) {
+      setSessionActive(false);
+      overlayTitle.textContent = "Connect with Masterdale";
+      overlayMessage.textContent = "Persistent access without RustOpViewer session expiry.";
+      masterdaleTokenInput.value = token;
+      masterdaleHint.textContent = hint;
+      dashboardPanel.hidden = true;
+      masterdalePanel.hidden = false;
+      passwordPanel.hidden = true;
+      pairingPanel.hidden = true;
+      frameOverlay.classList.remove("hidden");
+      window.setTimeout(() => masterdaleTokenInput.focus(), 0);
+    }
+
+    async function attemptMasterdaleLogin() {
+      if (state.masterdaleBusy) {
+        return;
+      }
+      const token = masterdaleTokenInput.value.trim();
+      if (!token) {
+        masterdaleHint.textContent = "Enter the Masterdale bearer token.";
+        masterdaleTokenInput.focus();
+        return;
+      }
+
+      state.masterdaleBusy = true;
+      masterdaleLoginButton.disabled = true;
+      masterdaleLoginButton.textContent = "Connecting...";
+      state.masterdaleToken = token;
+      writeStoredToken(MASTERDALE_STORAGE_KEY, token);
+      stopPolling();
+
+      try {
+        if (await performStatusRefresh(false)) {
+          masterdaleTokenInput.value = "";
+          hideOverlay();
+          scheduleNextStatus();
+          return;
+        }
+      } finally {
+        state.masterdaleBusy = false;
+        masterdaleLoginButton.disabled = false;
+        masterdaleLoginButton.textContent = "Connect";
+      }
     }
 
     async function attemptPasswordLogin() {

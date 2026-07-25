@@ -178,6 +178,8 @@ For a local private checkout, create `.private/rustopviewer.env` from `.env.exam
 ROV_DEVICE_CODE=WORKSTATION-01
 ROV_ACCESS_PASSWORD=use-a-long-unique-password-here
 ROV_ADMIN_TOKEN=use-a-different-long-random-admin-token
+ROV_MASTERDALE_TOKEN=use-the-same-token-as-masterdale
+# Optional: set all five ROV_OIDC_* values shown in .env.example.
 ```
 
 Then one normal launch is enough:
@@ -192,7 +194,39 @@ At startup, ROV reads `.private/rustopviewer.env` first, falls back to `.env` fo
 http://127.0.0.1:45080/admin?token=use-a-different-long-random-admin-token
 ```
 
-The page stores that admin token only in browser session storage and removes it from the address bar. Keep `.private/rustopviewer.env` and `.env` out of git and treat `ROV_ACCESS_PASSWORD` and `ROV_ADMIN_TOKEN` as real secrets.
+The page stores that admin token only in browser session storage and removes it from the address bar. Keep `.private/rustopviewer.env` and `.env` out of git and treat `ROV_ACCESS_PASSWORD`, `ROV_ADMIN_TOKEN`, and `ROV_MASTERDALE_TOKEN` as real secrets.
+
+When `ROV_MASTERDALE_TOKEN` is set, the remote page can use the same bearer token as
+Masterdale for persistent view and approved input access. `DALE_TOKEN` from the process
+environment is accepted as a fallback, which lets a service share Masterdale's canonical
+environment file without copying the secret. This token does not authorize RustOpViewer's
+loopback-only admin API, and host-side pointer and keyboard permission switches still apply.
+
+LinuxMice OIDC is an optional browser sign-in layer. Configure all five `ROV_OIDC_*`
+values from `.env.example`; the redirect must use HTTPS except during loopback testing,
+and `ROV_OIDC_ALLOWED_SUBJECTS` must explicitly list the LinuxMice owner UUIDs allowed
+to control the screen. Provider tokens are discarded after verification and RustOpViewer
+issues its normal bounded local session. Pairing, password, and Masterdale bearer access
+remain independent recovery and automation paths.
+
+For an X11 media box that already keeps Masterdale's canonical environment
+somewhere under the user home, the example user unit at
+`packaging/systemd/rustopviewer-masterdale.service` loads
+`%h/.config/rustopviewer/masterdale.env` (`DALE_TOKEN` is accepted as
+`ROV_MASTERDALE_TOKEN`). Point that file at Masterdale's env, or copy only the
+shared token keys, so you keep one token source of truth without embedding a
+repo checkout path in the unit. Adjust `DISPLAY` and `XAUTHORITY` if the
+desktop uses different values.
+
+The host having the token in env does not authenticate a phone browser by
+itself. The browser must still send that bearer once per origin (stored under
+`masterdale.dashboard.token` in that origin's localStorage) or use LinuxMice
+OIDC, which issues a normal RustOpViewer session cookie and avoids pasting the
+token.
+
+Screen capture sleeps while no authenticated viewer is active and wakes on the next authorized
+request. A headless media box therefore does not continuously encode its desktop in the
+background.
 
 On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
 
