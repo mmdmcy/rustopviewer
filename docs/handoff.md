@@ -48,13 +48,17 @@ different origins even when the storage key name matches.
 
 ```sh
 cargo test
+cargo clippy --all-targets -- -D warnings
 git diff --check
 ```
 
-Verified 2026-07-25: 33 tests passed; `git diff --check` clean.
+Verified 2026-07-25: 33 tests passed, strict Clippy passed, and
+`git diff --check` was clean. Private-tailnet browser-shaped verification also
+confirmed that the HTTPS relying-party route reaches LinuxMice authorization
+with S256 PKCE, state, nonce, and the registered RustOpViewer callback.
 
 ## Known Loose Ends
 
-- Live OIDC dogfood still needs a registered LinuxMice client and five
-  `ROV_OIDC_*` values in ignored env.
-- Install/rebuild the binary on each host before enabling the example user unit.
+- Live private-tailnet dogfood is installed, but this is not an OIDC
+  conformance result, production identity claim, or independent security
+  review.
