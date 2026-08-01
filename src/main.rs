@@ -1,5 +1,6 @@
 mod capture;
 mod config;
+mod fleet;
 mod input;
 mod model;
 mod network;
@@ -13,13 +14,12 @@ mod tui;
 use anyhow::{Context, Result};
 use security::TrustedBrowserStore;
 use serde::Deserialize;
-use state::{AppState, RuntimeAuth};
+use state::{AppState, RuntimeAuth, RuntimeRole};
 use std::{
     collections::HashMap,
     env, fs,
     io::{ErrorKind, Read, Write},
     net::TcpStream,
-    process,
     sync::Arc,
     thread,
     time::Duration,
@@ -33,8 +33,19 @@ fn main() -> Result<()> {
     init_logging();
     let cli = parse_cli()?;
 
+    if matches!(cli.command, Command::Help) {
+        print_help();
+        return Ok(());
+    }
+
     if cli.generate_pair_code {
         return request_pair_code_from_running_host(env_bootstrap.admin_token.as_deref());
+    }
+
+    if matches!(cli.command, Command::Devices | Command::Open { .. } | Command::Status)
+        && !cli.command.command_starts_runtime()
+    {
+        return run_fleet_query_command(&cli, &env_bootstrap);
     }
 
     let config_store = config::ConfigStore::new()?;
@@ -45,8 +56,20 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let role = match &cli.command {
+        Command::Host => RuntimeRole::Host,
+        Command::Agent { .. } => RuntimeRole::Agent,
+        _ => RuntimeRole::Standalone,
+    };
+
     let trusted_browser_store = TrustedBrowserStore::new(config_store.trusted_browsers_path())?;
-    let monitors = capture::discover_monitors().context("failed to enumerate monitors")?;
+    let monitors = match capture::discover_monitors() {
+        Ok(monitors) => monitors,
+        Err(err) => {
+            tracing::warn!(error = %err, "Display capture is unavailable; continuing without monitors");
+            Vec::new()
+        }
+    };
     let input_tx = input::spawn_input_worker().context("failed to start input worker")?;
     let is_elevated = platform::is_process_elevated();
 
@@ -68,6 +91,7 @@ fn main() -> Result<()> {
                 .map(security::hash_admin_token),
             oidc: env_bootstrap.oidc.clone(),
         },
+        role,
     )?);
     state
         .ensure_valid_selected_monitor()
@@ -86,12 +110,39 @@ fn main() -> Result<()> {
     capture::spawn_capture_worker(state.clone());
     server::spawn_server(state.clone());
 
-    match cli.run_mode {
+    match role {
+        RuntimeRole::Host => {
+            if env_bootstrap.masterdale_token.is_none() {
+                tracing::warn!(
+                    "ROV_MASTERDALE_TOKEN/DALE_TOKEN is unset; fleet register/list APIs will reject clients"
+                );
+            }
+            fleet::spawn_local_self_register(state.clone());
+        }
+        RuntimeRole::Agent => {
+            let Command::Agent { host } = &cli.command else {
+                unreachable!("agent role requires agent command");
+            };
+            let token = env_bootstrap.masterdale_token.clone().context(
+                "agent mode requires ROV_MASTERDALE_TOKEN or DALE_TOKEN so this device can register",
+            )?;
+            fleet::spawn_agent_registration(state.clone(), host.clone(), token);
+        }
+        RuntimeRole::Standalone => {}
+    }
+
+    let run_mode = if matches!(cli.command, Command::Agent { .. }) && cli.run_mode == RunMode::Tui {
+        RunMode::Headless
+    } else {
+        cli.run_mode
+    };
+
+    match run_mode {
         RunMode::Tui => {
             tui::run(state).context("failed to run the RustOp Viewer terminal UI")?;
         }
         RunMode::Headless => {
-            run_headless(state);
+            run_headless(state, role);
         }
     }
 
@@ -104,7 +155,25 @@ enum RunMode {
     Headless,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Command {
+    Runtime,
+    Host,
+    Agent { host: String },
+    Status,
+    Devices,
+    Open { device: String },
+    Help,
+}
+
+impl Command {
+    fn command_starts_runtime(&self) -> bool {
+        matches!(self, Self::Runtime | Self::Host | Self::Agent { .. })
+    }
+}
+
 struct CliOptions {
+    command: Command,
     run_mode: RunMode,
     print_pair_code: bool,
     generate_pair_code: bool,
@@ -112,6 +181,7 @@ struct CliOptions {
     set_access_password: Option<String>,
     clear_access_password: bool,
     print_device: bool,
+    fleet_host: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -120,6 +190,7 @@ struct EnvBootstrap {
     access_password: Option<String>,
     admin_token: Option<String>,
     masterdale_token: Option<String>,
+    fleet_host: Option<String>,
     oidc: Option<oidc::OidcConfig>,
 }
 
@@ -132,6 +203,89 @@ impl CliOptions {
     }
 }
 
+fn run_fleet_query_command(cli: &CliOptions, env_bootstrap: &EnvBootstrap) -> Result<()> {
+    match &cli.command {
+        Command::Status => {
+            let config_store = config::ConfigStore::new()?;
+            let config = config_store.load_or_create()?;
+            let urls = network::discover_urls(config.port);
+            println!("device_code={}", config.device_code);
+            println!("port={}", config.port);
+            println!("preferred_url={}", urls.preferred.url);
+            println!("loopback_url={}", urls.loopback.url);
+            if let Some(host) = resolve_fleet_host(cli, env_bootstrap) {
+                println!("fleet_host={host}");
+            }
+            if env_bootstrap.masterdale_token.is_some() {
+                println!("masterdale_token=configured");
+            } else {
+                println!("masterdale_token=missing");
+            }
+            Ok(())
+        }
+        Command::Devices => {
+            let host = resolve_fleet_host(cli, env_bootstrap)
+                .context("pass --host URL or set ROV_FLEET_HOST")?;
+            let token = env_bootstrap
+                .masterdale_token
+                .as_deref()
+                .context("ROV_MASTERDALE_TOKEN or DALE_TOKEN is required")?;
+            let devices = fleet::fetch_devices(&host, token)?;
+            println!(
+                "{:<16} {:<8} {:<22} {}",
+                "DEVICE", "ONLINE", "OS", "URL"
+            );
+            for device in devices {
+                println!(
+                    "{:<16} {:<8} {:<22} {}",
+                    device.device_id,
+                    if device.online { "yes" } else { "no" },
+                    truncate(&device.os, 22),
+                    device.viewer_url
+                );
+            }
+            Ok(())
+        }
+        Command::Open { device } => {
+            let host = resolve_fleet_host(cli, env_bootstrap)
+                .context("pass --host URL or set ROV_FLEET_HOST")?;
+            let token = env_bootstrap
+                .masterdale_token
+                .as_deref()
+                .context("ROV_MASTERDALE_TOKEN or DALE_TOKEN is required")?;
+            let devices = fleet::fetch_devices(&host, token)?;
+            let found = devices
+                .into_iter()
+                .find(|entry| {
+                    entry.device_id.eq_ignore_ascii_case(device)
+                        || entry.device_code.eq_ignore_ascii_case(device)
+                        || entry.display_name.eq_ignore_ascii_case(device)
+                })
+                .with_context(|| format!("device {device:?} was not found in the fleet registry"))?;
+            println!("{}", found.viewer_url);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn resolve_fleet_host(cli: &CliOptions, env_bootstrap: &EnvBootstrap) -> Option<String> {
+    cli.fleet_host
+        .clone()
+        .or_else(|| env_bootstrap.fleet_host.clone())
+}
+
+fn truncate(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        value.to_string()
+    } else {
+        format!(
+            "{}…",
+            value.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    }
+}
+
 fn load_project_env() -> Result<EnvBootstrap> {
     let values = load_dotenv_values()?;
     let device_code = env_value(&values, "ROV_DEVICE_CODE");
@@ -139,6 +293,7 @@ fn load_project_env() -> Result<EnvBootstrap> {
     let admin_token = env_value(&values, "ROV_ADMIN_TOKEN");
     let masterdale_token =
         env_value(&values, "ROV_MASTERDALE_TOKEN").or_else(|| env_value(&values, "DALE_TOKEN"));
+    let fleet_host = env_value(&values, "ROV_FLEET_HOST");
     let oidc = oidc::OidcConfig::from_values(
         env_value(&values, "ROV_OIDC_ISSUER"),
         env_value(&values, "ROV_OIDC_CLIENT_ID"),
@@ -163,6 +318,7 @@ fn load_project_env() -> Result<EnvBootstrap> {
         access_password,
         admin_token,
         masterdale_token,
+        fleet_host,
         oidc,
     })
 }
@@ -287,10 +443,39 @@ fn parse_cli() -> Result<CliOptions> {
     let mut set_access_password = None;
     let mut clear_access_password = false;
     let mut print_device = false;
+    let mut fleet_host = None;
+    let mut command = Command::Runtime;
+    let mut positional = Vec::new();
 
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "host" if positional.is_empty() && command == Command::Runtime => {
+                command = Command::Host;
+            }
+            "agent" if positional.is_empty() && command == Command::Runtime => {
+                command = Command::Agent {
+                    host: String::new(),
+                };
+            }
+            "status" if positional.is_empty() && command == Command::Runtime => {
+                command = Command::Status;
+            }
+            "devices" if positional.is_empty() && command == Command::Runtime => {
+                command = Command::Devices;
+            }
+            "open" if positional.is_empty() && command == Command::Runtime => {
+                command = Command::Open {
+                    device: String::new(),
+                };
+            }
+            "--host" => {
+                let value = args.next().context("--host requires a URL")?;
+                match &mut command {
+                    Command::Agent { host } => *host = value.clone(),
+                    _ => fleet_host = Some(value),
+                }
+            }
             "--headless" => run_mode = RunMode::Headless,
             "--print-pair-code" => print_pair_code = true,
             "--generate-pair-code" => generate_pair_code = true,
@@ -309,11 +494,35 @@ fn parse_cli() -> Result<CliOptions> {
             "--clear-access-password" => clear_access_password = true,
             "--print-device" => print_device = true,
             "-h" | "--help" => {
-                print_help();
-                process::exit(0);
+                command = Command::Help;
             }
-            _ => anyhow::bail!("unknown argument: {arg}"),
+            other if other.starts_with('-') => anyhow::bail!("unknown argument: {other}"),
+            other => positional.push(other.to_string()),
         }
+    }
+
+    if let Command::Open { device } = &mut command {
+        *device = positional
+            .first()
+            .cloned()
+            .context("open requires a device id, code, or display name")?;
+        positional.clear();
+    }
+
+    if let Command::Agent { host } = &mut command {
+        if host.is_empty() {
+            *host = fleet_host
+                .clone()
+                .or_else(|| env::var("ROV_FLEET_HOST").ok())
+                .context("agent requires --host URL or ROV_FLEET_HOST")?;
+        }
+        if !host.starts_with("http://") && !host.starts_with("https://") {
+            *host = format!("http://{host}");
+        }
+    }
+
+    if !positional.is_empty() && !matches!(command, Command::Help) {
+        anyhow::bail!("unexpected arguments: {}", positional.join(" "));
     }
 
     if generate_pair_code && (run_mode != RunMode::Tui || print_pair_code) {
@@ -345,6 +554,7 @@ fn parse_cli() -> Result<CliOptions> {
     }
 
     Ok(CliOptions {
+        command,
         run_mode,
         print_pair_code,
         generate_pair_code,
@@ -352,6 +562,7 @@ fn parse_cli() -> Result<CliOptions> {
         set_access_password,
         clear_access_password,
         print_device,
+        fleet_host,
     })
 }
 
@@ -361,6 +572,11 @@ fn print_help() {
 RustOp Viewer
 
 Usage:
+  rustopviewer host [--headless] [--print-pair-code]
+  rustopviewer agent --host URL [--headless]
+  rustopviewer status
+  rustopviewer devices [--host URL]
+  rustopviewer open <device> [--host URL]
   rustopviewer [--headless] [--print-pair-code]
   rustopviewer --generate-pair-code
   rustopviewer --set-device-code CODE
@@ -368,8 +584,16 @@ Usage:
   rustopviewer --clear-access-password
   rustopviewer --print-device
 
+Fleet commands:
+  host               Run as the fleet registry + local desktop host.
+  agent --host URL   Run as a capture agent and register with the host.
+  status             Print local device status and preferred URLs.
+  devices            List devices registered on the fleet host.
+  open <device>      Print the viewer URL for a registered device.
+
 Options:
-  --headless         Run the host runtime without the local terminal UI.
+  --host URL         Fleet registry URL (also ROV_FLEET_HOST).
+  --headless         Run without the local terminal UI.
   --print-pair-code  Generate and log one host-approved one-time pairing code at startup.
   --generate-pair-code
                      Ask the running local host to mint a fresh one-time pairing code.
@@ -381,6 +605,9 @@ Options:
                      Disable unattended password login for this host.
   --print-device     Print this host's device code and dashboard label.
   -h, --help         Show this help text.
+
+Auth:
+  Set the same DALE_TOKEN / ROV_MASTERDALE_TOKEN on every device.
 "
     );
 }
@@ -525,19 +752,23 @@ fn parse_pair_code_response(response: &[u8]) -> Result<PairCodeResponse> {
         .context("the running host returned an invalid pair-code response payload")
 }
 
-fn run_headless(state: Arc<AppState>) {
+fn run_headless(state: Arc<AppState>, role: RuntimeRole) {
     let urls = network::discover_urls(state.port());
     tracing::info!(
         port = state.port(),
+        role = ?role,
         preferred_url = %urls.preferred.url,
         loopback_url = %urls.loopback.url,
         admin_url = %format!("http://127.0.0.1:{}/admin", state.port()),
+        fleet_enabled = state.fleet_enabled(),
         tailscale_mode = ?urls.tailscale_status.remote_access_mode(),
         "RustOp Viewer headless runtime is active"
     );
-    tracing::info!(
-        "Initial pairing still requires a host-approved one-time pairing code or an already trusted browser"
-    );
+    if matches!(role, RuntimeRole::Standalone | RuntimeRole::Host) {
+        tracing::info!(
+            "Initial pairing still requires a host-approved one-time pairing code, Masterdale token, or an already trusted browser"
+        );
+    }
 
     loop {
         thread::park_timeout(Duration::from_secs(3600));

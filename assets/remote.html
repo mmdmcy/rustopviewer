@@ -716,6 +716,8 @@
           <strong id="overlayTitle">Waiting for the host</strong>
           <span id="overlayMessage">The live workspace will appear here when the host is ready.</span>
           <div class="dashboard-panel" id="dashboardPanel" hidden>
+            <div class="device-list" id="fleetDeviceList"></div>
+            <div class="empty-devices" id="fleetDeviceEmpty" hidden>No fleet devices are registered yet. Start agents with the shared Masterdale token.</div>
             <div class="device-list" id="currentDeviceList"></div>
             <div class="device-list" id="rememberedDeviceList"></div>
             <div class="empty-devices" id="rememberedDeviceEmpty" hidden>No other devices are remembered in this browser yet.</div>
@@ -928,6 +930,8 @@
       trustedToken: "",
       trustedRestoreAvailable: true,
       currentDevice: null,
+      fleetDevices: [],
+      fleetBusy: false,
       rememberedDevices: [],
       statusTimerId: 0,
       statusRequestInFlight: false,
@@ -952,6 +956,8 @@
     const overlayTitle = document.getElementById("overlayTitle");
     const overlayMessage = document.getElementById("overlayMessage");
     const dashboardPanel = document.getElementById("dashboardPanel");
+    const fleetDeviceList = document.getElementById("fleetDeviceList");
+    const fleetDeviceEmpty = document.getElementById("fleetDeviceEmpty");
     const currentDeviceList = document.getElementById("currentDeviceList");
     const rememberedDeviceList = document.getElementById("rememberedDeviceList");
     const rememberedDeviceEmpty = document.getElementById("rememberedDeviceEmpty");
@@ -1134,17 +1140,80 @@
         }
         state.currentDevice = await response.json();
         linuxmiceAccessButton.hidden = !state.currentDevice.oidc_enabled;
+        await loadFleetDevices();
         renderDashboard();
       } catch {
         state.currentDevice = null;
+        state.fleetDevices = [];
         linuxmiceAccessButton.hidden = true;
         renderDashboard();
       }
     }
 
     function renderDashboard() {
+      renderFleetDevices();
       renderCurrentDevice();
       renderRememberedDevices();
+    }
+
+    async function loadFleetDevices() {
+      if (!state.masterdaleToken || !state.currentDevice?.fleet_enabled) {
+        state.fleetDevices = [];
+        return;
+      }
+      try {
+        const response = await fetch(apiUrl("v1/fleet/devices"), {
+          cache: "no-store",
+          headers: authHeaders(),
+          credentials: "same-origin"
+        });
+        if (!response.ok) {
+          throw new Error(`fleet ${response.status}`);
+        }
+        const payload = await response.json();
+        state.fleetDevices = Array.isArray(payload.devices) ? payload.devices : [];
+      } catch {
+        state.fleetDevices = [];
+      }
+    }
+
+    function renderFleetDevices() {
+      if (!fleetDeviceList || !fleetDeviceEmpty) {
+        return;
+      }
+      fleetDeviceList.textContent = "";
+      const devices = state.fleetDevices || [];
+      const showFleet = !!state.currentDevice?.fleet_enabled && !!state.masterdaleToken;
+      fleetDeviceEmpty.hidden = !showFleet || devices.length > 0;
+      if (!showFleet) {
+        return;
+      }
+      for (const device of devices) {
+        const local = sameUrl(device.viewer_url, APP_BASE_URL.href);
+        fleetDeviceList.appendChild(createDeviceRow({
+          ...device,
+          password_enabled: local ? state.currentDevice?.password_enabled : false
+        }, {
+          current: local,
+          connectLabel: local ? "View here" : (device.online ? "Open" : "Offline"),
+          connectDisabled: !local && !device.online,
+          onConnect: () => {
+            if (local) {
+              hideOverlay();
+              scheduleNextStatus();
+              return;
+            }
+            if (!device.viewer_url) {
+              return;
+            }
+            const target = new URL(device.viewer_url);
+            if (state.masterdaleToken) {
+              target.hash = `masterdale=${encodeURIComponent(state.masterdaleToken)}`;
+            }
+            window.location.href = target.toString();
+          }
+        }));
+      }
     }
 
     function renderCurrentDevice() {
@@ -1326,7 +1395,10 @@
     function boot() {
       state.sessionToken = readStoredToken(SESSION_STORAGE_KEY);
       state.trustedToken = readStoredToken(TRUSTED_STORAGE_KEY);
-      state.masterdaleToken = readStoredToken(MASTERDALE_STORAGE_KEY);
+      state.masterdaleToken = consumeMasterdaleHashToken() || readStoredToken(MASTERDALE_STORAGE_KEY);
+      if (state.masterdaleToken) {
+        writeStoredToken(MASTERDALE_STORAGE_KEY, state.masterdaleToken);
+      }
       state.trustedRestoreAvailable = !!state.trustedToken;
       state.rememberedDevices = readRememberedDevices();
       state.desktopClient = detectDesktopClient();
@@ -1339,6 +1411,17 @@
       if (!hasPairRedirectState) {
         refreshStatus();
       }
+    }
+
+    function consumeMasterdaleHashToken() {
+      const hash = window.location.hash.replace(/^#/, "");
+      if (!hash.startsWith("masterdale=")) {
+        return "";
+      }
+      const token = decodeURIComponent(hash.slice("masterdale=".length)).trim();
+      const nextUrl = `${window.location.pathname}${window.location.search}`;
+      window.history.replaceState({}, "", nextUrl);
+      return token;
     }
 
     function applyPairRedirectState() {
@@ -3629,6 +3712,14 @@
       try {
         if (await performStatusRefresh(false)) {
           masterdaleTokenInput.value = "";
+          if (state.currentDevice?.fleet_enabled) {
+            await loadFleetDevices();
+            showDashboard(
+              "Fleet devices",
+              "Choose a registered device. Agents open in their own viewer URL; paste the token once per origin if asked."
+            );
+            return;
+          }
           hideOverlay();
           scheduleNextStatus();
           return;

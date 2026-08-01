@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     config::{AppConfig, ConfigStore, StreamProfile, StreamSettings, normalize_device_code},
+    fleet::FleetRegistry,
     input::InputCommand,
     model::{DeviceInfoResponse, LatestFrame, MonitorInfo, StatusResponse},
     oidc::OidcConfig,
@@ -31,6 +32,13 @@ pub struct RuntimeAuth {
     pub oidc: Option<OidcConfig>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeRole {
+    Standalone,
+    Host,
+    Agent,
+}
+
 pub struct AppState {
     config_store: ConfigStore,
     config: RwLock<AppConfig>,
@@ -46,6 +54,8 @@ pub struct AppState {
     masterdale_input_window: RwLock<MasterdaleInputWindow>,
     capture_active_until: Mutex<Instant>,
     capture_wake: Condvar,
+    role: RuntimeRole,
+    fleet: Option<Arc<FleetRegistry>>,
 }
 
 impl AppState {
@@ -57,8 +67,10 @@ impl AppState {
         trusted_browser_store: TrustedBrowserStore,
         is_elevated: bool,
         auth: RuntimeAuth,
+        role: RuntimeRole,
     ) -> Result<Self> {
         config.normalize();
+        let fleet = matches!(role, RuntimeRole::Host).then(|| Arc::new(FleetRegistry::new()));
 
         Ok(Self {
             config_store,
@@ -78,13 +90,32 @@ impl AppState {
             }),
             capture_active_until: Mutex::new(Instant::now()),
             capture_wake: Condvar::new(),
+            role,
+            fleet,
         })
+    }
+
+    #[allow(dead_code)]
+    pub fn role(&self) -> RuntimeRole {
+        self.role
+    }
+
+    pub fn fleet_registry(&self) -> Option<Arc<FleetRegistry>> {
+        self.fleet.clone()
+    }
+
+    pub fn fleet_enabled(&self) -> bool {
+        self.fleet.is_some()
     }
 
     pub fn ensure_valid_selected_monitor(&self) -> Result<()> {
         let monitors = self.monitors();
-        let monitor = preferred_monitor(self.selected_monitor_id(), &monitors)
-            .ok_or_else(|| anyhow!("no display monitors were detected"))?;
+        let Some(monitor) = preferred_monitor(self.selected_monitor_id(), &monitors) else {
+            self.set_capture_error(
+                "no display monitors were detected; desktop capture is unavailable",
+            );
+            return Ok(());
+        };
 
         if Some(monitor.id) != self.selected_monitor_id() {
             self.set_selected_monitor(monitor.id)?;
@@ -555,6 +586,12 @@ impl AppState {
             os_family: platform::os_family(),
             password_enabled: self.access_password_configured(),
             oidc_enabled: self.oidc.is_some(),
+            fleet_enabled: self.fleet_enabled(),
+            role: match self.role {
+                RuntimeRole::Standalone => "standalone".to_string(),
+                RuntimeRole::Host => "host".to_string(),
+                RuntimeRole::Agent => "agent".to_string(),
+            },
         }
     }
 }

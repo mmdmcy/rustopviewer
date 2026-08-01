@@ -76,4 +76,6 @@ pub struct DeviceInfoResponse {
     pub os_family: String,
     pub password_enabled: bool,
     pub oidc_enabled: bool,
+    pub fleet_enabled: bool,
+    pub role: String,
 }
