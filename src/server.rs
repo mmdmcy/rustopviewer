@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     config::StreamProfile,
+    fleet::{FleetHeartbeatRequest, FleetRegisterRequest},
     input::{self, InputRequest},
     model::{DeviceInfoResponse, MonitorInfo},
     network, oidc,
@@ -111,6 +112,9 @@ async fn run_server(state: Arc<AppState>) -> Result<()> {
         .route("/api/status", get(status))
         .route("/api/frame.jpg", get(frame))
         .route("/api/input", post(input))
+        .route("/v1/fleet/register", post(fleet_register))
+        .route("/v1/fleet/heartbeat", post(fleet_heartbeat))
+        .route("/v1/fleet/devices", get(fleet_devices))
         .layer(DefaultBodyLimit::max(8 * 1024))
         .with_state(state.clone());
 
@@ -902,6 +906,73 @@ async fn input(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn fleet_register(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<FleetRegisterRequest>,
+) -> ApiResult<Response> {
+    authorize_masterdale_only(&headers, &state)?;
+    let registry = state.fleet_registry().ok_or((
+        StatusCode::NOT_FOUND,
+        "fleet registry is only available on rustopviewer host mode".to_string(),
+    ))?;
+    if request.device_id.trim().is_empty() || request.viewer_url.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "device_id and viewer_url are required".to_string(),
+        ));
+    }
+    let device = registry.register(request);
+    json_response(device)
+}
+
+async fn fleet_heartbeat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<FleetHeartbeatRequest>,
+) -> ApiResult<Response> {
+    authorize_masterdale_only(&headers, &state)?;
+    let registry = state.fleet_registry().ok_or((
+        StatusCode::NOT_FOUND,
+        "fleet registry is only available on rustopviewer host mode".to_string(),
+    ))?;
+    let device = registry.heartbeat(request).map_err(|err| {
+        (
+            StatusCode::NOT_FOUND,
+            err.to_string(),
+        )
+    })?;
+    json_response(device)
+}
+
+async fn fleet_devices(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    authorize_masterdale_only(&headers, &state)?;
+    let registry = state.fleet_registry().ok_or((
+        StatusCode::NOT_FOUND,
+        "fleet registry is only available on rustopviewer host mode".to_string(),
+    ))?;
+    json_response(serde_json::json!({ "devices": registry.list() }))
+}
+
+fn authorize_masterdale_only(headers: &HeaderMap, state: &AppState) -> ApiResult<()> {
+    let Some(token) = bearer_token(headers) else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Masterdale bearer token required".to_string(),
+        ));
+    };
+    if !state.authorize_masterdale_token(&token) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Masterdale token required or invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn authorize_viewer(headers: &HeaderMap, state: &AppState) -> ApiResult<ViewerAuthorization> {
     if let Some(token) = bearer_token(headers) {
         return if state.authorize_masterdale_token(&token) {
@@ -1493,9 +1564,8 @@ async fn refresh_tailscale_listeners(
     app: Router,
 ) {
     let tailscale_status = network::discover_tailscale_status();
-    if tailscale_status.serve_enabled {
-        return;
-    }
+    // Always bind the app port on Tailscale IPs. An unrelated `tailscale serve`
+    // config (for another local service/port) must not hide this listener.
 
     let tailscale_ips = tailscale_status.tailscale_ips;
     for ip in tailscale_ips {

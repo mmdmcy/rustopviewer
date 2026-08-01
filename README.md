@@ -4,12 +4,14 @@ RustOp Viewer, or **ROV**, is a Rust remote desktop viewer/controller for Linux 
 
 ROV currently ships as:
 
+- Fleet host/agent CLI modes with a shared Masterdale bearer (`DALE_TOKEN`)
+- A central registry host so registered devices appear in the browser dashboard
 - A cross-platform host TUI for Linux and Windows
 - A built-in browser client served by the host itself
 - A host-approved pairing flow that exchanges one-time codes for short-lived sessions
 - Optional unattended login with a custom device code and long access password
 - Optional remembered-browser trust for devices you approve once and revisit later
-- A browser dashboard for the current host and previously connected devices
+- A browser dashboard for the current host, fleet roster, and previously connected devices
 - A loopback-only browser admin page for host settings and session controls
 - Loopback-first network exposure with optional Tailscale URL discovery
 - Reverse-proxy-friendly browser paths for subpath or hostname-based publishing
@@ -91,12 +93,33 @@ Notable current limitations:
 - The host session must already be awake and unlocked
 - Remote input is intentionally locked out while ROV runs elevated
 - Remembered access still depends on the browser retaining its local session storage and the host not revoking that device
-- The device dashboard is browser/origin-local; there is no central device directory yet
+- The device dashboard is browser/origin-local for remembered entries; fleet host mode adds a live registry roster
 - No audio streaming
 - No clipboard sync
 - No file transfer
 - No WebRTC transport yet
 - `Ctrl+Alt+Del` is intentionally out of scope for a normal user-space app
+
+## Fleet Quick Start
+
+On the always-on registry host:
+
+```bash
+rustopviewer host --headless
+```
+
+On each other device:
+
+```bash
+rustopviewer agent --host http://<registry-tailscale-ip>:45080
+```
+
+Put the same `DALE_TOKEN` in every device env file. See [docs/fleet.md](docs/fleet.md).
+
+```bash
+rustopviewer devices --host http://<registry-tailscale-ip>:45080
+rustopviewer open workstation --host http://<registry-tailscale-ip>:45080
+```
 
 ## Quick Start
 
