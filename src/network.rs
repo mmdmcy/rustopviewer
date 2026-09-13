@@ -87,7 +87,7 @@ pub fn discover_urls(port: u16) -> UrlSet {
         url: format!("http://127.0.0.1:{port}/"),
     };
     let tailscale_status = discover_tailscale_status();
-    let serve_snapshot = discover_tailscale_serve();
+    let serve_snapshot = discover_tailscale_serve_for_port(port);
     let tailscale_http = tailscale_status
         .tailscale_ips
         .first()
@@ -199,6 +199,14 @@ fn discover_tailscale_serve() -> TailscaleServeSnapshot {
     parse_tailscale_serve_status(&output)
 }
 
+fn discover_tailscale_serve_for_port(port: u16) -> TailscaleServeSnapshot {
+    let Some(output) = tailscale_serve_status_output() else {
+        return TailscaleServeSnapshot::default();
+    };
+
+    parse_tailscale_serve_status_for_port(&output, port)
+}
+
 fn parse_tailscale_serve_status(output: &[u8]) -> TailscaleServeSnapshot {
     let text = String::from_utf8_lossy(output);
     if text.trim().is_empty() || text.contains("No serve config") {
@@ -225,6 +233,57 @@ fn parse_tailscale_serve_status(output: &[u8]) -> TailscaleServeSnapshot {
         http_url,
         https_url,
     }
+}
+
+fn parse_tailscale_serve_status_for_port(output: &[u8], port: u16) -> TailscaleServeSnapshot {
+    let text = String::from_utf8_lossy(output);
+    if text.trim().is_empty() || text.contains("No serve config") {
+        return TailscaleServeSnapshot::default();
+    }
+
+    let mut matching_urls = Vec::new();
+    let mut current_url = None;
+    let mut current_proxy_matches = false;
+
+    for line in text.lines().map(str::trim) {
+        if line.starts_with("http://") || line.starts_with("https://") {
+            if current_proxy_matches {
+                if let Some(url) = current_url.take() {
+                    matching_urls.push(url);
+                }
+            }
+            current_url = line.split_whitespace().next().map(str::to_string);
+            current_proxy_matches = false;
+        } else if current_url.is_some()
+            && line.contains("proxy")
+            && line
+                .split_whitespace()
+                .any(|token| token_port(token).is_some_and(|candidate| candidate == port))
+        {
+            current_proxy_matches = true;
+        }
+    }
+
+    if current_proxy_matches {
+        if let Some(url) = current_url {
+            matching_urls.push(url);
+        }
+    }
+
+    let mut urls = matching_urls;
+    urls.sort_by_key(|url| (!url.contains(".ts.net"), url.len()));
+    let https_url = urls.iter().find(|url| url.starts_with("https://")).cloned();
+    let http_url = urls.iter().find(|url| url.starts_with("http://")).cloned();
+
+    TailscaleServeSnapshot {
+        http_url,
+        https_url,
+    }
+}
+
+fn token_port(token: &str) -> Option<u16> {
+    let authority = token.split_once("://")?.1.split('/').next()?;
+    authority.rsplit_once(':')?.1.parse().ok()
 }
 
 fn tailscale_status_output() -> Option<Vec<u8>> {
@@ -316,7 +375,7 @@ struct TailscaleTailnet {
 mod tests {
     use super::{
         RemoteAccessMode, TailscaleStatusSnapshot, parse_tailscale_serve_status,
-        parse_tailscale_status,
+        parse_tailscale_serve_status_for_port, parse_tailscale_status,
     };
     use std::net::Ipv4Addr;
 
@@ -405,6 +464,35 @@ http://workstation.example.ts.net:45080 (tailnet only)
             active.http_url.as_deref(),
             Some("http://workstation.example.ts.net:45080")
         );
+    }
+
+    #[test]
+    fn tailscale_serve_status_ignores_routes_for_other_services() {
+        let active = parse_tailscale_serve_status_for_port(
+            br#"https://workstation.example.ts.net:7346 (tailnet only)
+|-- / proxy http://127.0.0.1:7345
+
+https://workstation.example.ts.net:45081 (tailnet only)
+|-- / proxy http://127.0.0.1:45080"#,
+            45080,
+        );
+
+        assert_eq!(
+            active.https_url.as_deref(),
+            Some("https://workstation.example.ts.net:45081")
+        );
+    }
+
+    #[test]
+    fn tailscale_serve_status_has_no_viewer_route_when_only_other_routes_exist() {
+        let active = parse_tailscale_serve_status_for_port(
+            br#"https://workstation.example.ts.net:7346 (tailnet only)
+|-- / proxy http://127.0.0.1:7345"#,
+            45080,
+        );
+
+        assert!(active.http_url.is_none());
+        assert!(active.https_url.is_none());
     }
 
     #[test]
