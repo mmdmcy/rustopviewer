@@ -1,406 +1,62 @@
-# rustopviewer
+# RustOp Viewer
 
-RustOp Viewer, or **ROV**, is a Rust remote desktop viewer/controller for Linux and Windows hosts with built-in browser clients for desktop and mobile use.
+Your own devices' desktops in a browser, over SSH.
 
-ROV currently ships as:
+```
+rustopviewer serve        on the device: shows its screen on a private socket
+lmice desktop DEVICE      from anywhere in your fleet: tunnel + browser
+```
 
-- Fleet host/agent CLI modes with a shared Masterdale bearer (`DALE_TOKEN`)
-- A central registry host so registered devices appear in the browser dashboard
-- A cross-platform host TUI for Linux and Windows
-- A built-in browser client served by the host itself
-- A host-approved pairing flow that exchanges one-time codes for short-lived sessions
-- Optional unattended login with a custom device code and long access password
-- Optional remembered-browser trust for devices you approve once and revisit later
-- A browser dashboard for the current host, fleet roster, and previously connected devices
-- A loopback-only browser admin page for host settings and session controls
-- Loopback-first network exposure with optional Tailscale URL discovery
-- Reverse-proxy-friendly browser paths for subpath or hostname-based publishing
-- In-terminal readiness checks for local and private-browser access paths
+RustOp Viewer shows a device's screen in a browser tab and sends your mouse
+and keyboard back. It is built to be small and hard to misuse:
 
-## Why ROV
+- **Nothing listens on the network.** The viewer serves on a Unix socket in
+  your home folder that only you can open (or on a loopback address).
+  You reach it through an SSH tunnel.
+- **It runs only while you are connected.** Started inside the SSH
+  session (`--until-stdin-closes`), it stops when the session ends; there
+  is no background service.
+- **A fresh key per session.** The browser trades it for a strict
+  same-site, script-proof cookie; every request must name a loopback host
+  and input must be a same-origin JSON request, so web pages cannot reach
+  it through your browser.
+- **Standard library only.** Go, no third-party modules: it speaks the X11
+  protocol itself (screen through GetImage, mouse and keyboard through the
+  X server's XTEST extension) and streams JPEG to an `<img>`.
 
-ROV exists to make a very specific workflow feel good:
+## Use
 
-- Open a host machine from a browser
-- Reach it through loopback, Tailscale, or a private reverse proxy/tunnel
-- See the desktop
-- Click, drag, scroll, type, and launch shortcuts quickly
-- Keep the stack small, understandable, and hackable in Rust
-
-## Product Direction
-
-This repository is intentionally aimed at a focused remote-control workflow rather than a full Remote Desktop replacement.
-
-### Core goals
-
-- Reliable remote access from desktop or mobile browsers to Linux and Windows hosts
-- Loopback-first deployment that works well with Tailscale or a reverse proxy/tunnel
-- No direct public internet exposure by default
-- Security-first defaults, with host-approved pairing and tight session handling
-- A browser experience that remains usable on limited or flaky connectivity
-- Fast access to the live desktop with the inputs that matter most: pointer, scroll, text, and shortcuts
-
-### Explicit non-goals for now
-
-- Replacing full desktop-sharing suites feature-for-feature
-- Audio streaming
-- Clipboard sync
-- File transfer
-- Enterprise desktop-management features
-- Chasing extra complexity when the focused browser workflow already feels good enough
-
-### Operational boundaries
-
-- The host session is expected to be awake and unlocked
-- Loopback is the default listener; Tailscale and reverse proxies are additive publishing paths
-- The browser client is a focused control surface, not a general-purpose desktop protocol
-- Security and safe remote use take priority over convenience when the two conflict
-
-## Current Features
-
-- Cross-platform host TUI for Linux and Windows
-- Optional `--headless` host runtime for unattended restart-safe deployments after the first approval
-- Optional `--print-pair-code` startup flow for one-time first pairing when you are running headless
-- Optional `ROV_EXTRA_LISTEN_ADDRS` support for trusted local reverse proxies that cannot reach loopback directly
-- Monitor selection
-- Browser client that works on desktop and mobile browsers
-- Screen streaming from the selected monitor
-- Balanced, Data Saver, and Emergency stream profiles for browser-friendly bandwidth use
-- Mouse move, click, drag, and wheel input
-- Desktop-browser wheel, right-click, and middle-click support
-- Desktop-browser physical keyboard capture with visible capture/release state plus plain-text and shortcut actions
-- Mobile keyboard compose and live typing modes
-- Mobile-only touch control chrome that stays out of the way on desktop browsers
-- Touch zoom and panning on mobile browsers
-- Fit-to-window scaling with manual zoom in and out from the browser
-- Pair-approved control that automatically restores pointer and keyboard unless the host is elevated, with host-side toggles for view-only when desired
-- Host identity metadata with a custom device code, OS label, and `username@hostname` dashboard label
-- Optional unattended password login that can remember the browser without storing the password in browser storage
-- Remembered browsers can automatically refresh their short-lived session after host restarts or daily session expiry
-- Browser dashboard entries for devices previously connected from the same browser origin
-- Local browser admin at `/admin` for device code, access password, pair codes, input scopes, stream profile, monitor selection, session cleanup, Tailscale URL setup, and panic stop
-- Loopback plus optional Tailscale-tailnet host listeners
-- Relative browser API paths so the client can sit behind a stripped reverse-proxy prefix
-- Browser-side session recovery that keeps same-origin API calls working through stricter reverse proxies
-
-## Current Limitations
-
-ROV is still early-stage software.
-
-Notable current limitations:
-
-- Linux builds currently depend on desktop capture libraries provided by the host OS
-- The host session must already be awake and unlocked
-- Remote input is intentionally locked out while ROV runs elevated
-- Remembered access still depends on the browser retaining its local session storage and the host not revoking that device
-- The device dashboard is browser/origin-local for remembered entries; fleet host mode adds a live registry roster
-- No audio streaming
-- No clipboard sync
-- No file transfer
-- No WebRTC transport yet
-- `Ctrl+Alt+Del` is intentionally out of scope for a normal user-space app
-
-## Fleet Quick Start
-
-On the always-on registry host:
+With [LinuxMice](docs/architecture.md#with-linuxmice), from any controller:
 
 ```bash
-rustopviewer host --headless
+lmice desktop server          # opens your browser on server's desktop
 ```
 
-On each other device:
+By hand, with plain SSH:
 
 ```bash
-rustopviewer agent --host http://<registry-tailscale-ip>:45080
+ssh -L 127.0.0.1:47800:/home/me/.local/state/rustopviewer/rov.sock server \
+  rustopviewer serve --until-stdin-closes
+# it prints: ready key=KEY
+# open http://127.0.0.1:47800/?k=KEY
 ```
 
-Put the same `DALE_TOKEN` in every device env file. See [docs/fleet.md](docs/fleet.md).
+## Supported
+
+- Hosts: Linux with an X11 desktop (Cinnamon, MATE, Xfce, KDE on X11, …).
+  Windows hosts and Wayland are planned (see [ROADMAP](ROADMAP.md)).
+- Viewers: any current browser.
+
+## Build
 
 ```bash
-rustopviewer devices --host http://<registry-tailscale-ip>:45080
-rustopviewer open workstation --host http://<registry-tailscale-ip>:45080
+go build -trimpath -ldflags='-s -w' .   # Go 1.24+, no dependencies
+go test ./...
 ```
 
-## Quick Start
-
-The default path is intentionally local-first:
-
-1. Run ROV on the host.
-2. Open the local URL from the host itself.
-3. Approve one browser with a one-time code.
-4. Revisit from that browser later if you enabled remembered trust.
-
-### Requirements
-
-- Linux or Windows host
-- Rust toolchain
-- A modern desktop or mobile browser
-- Tailscale only if you want private tailnet URLs
-
-### Linux build dependencies
-
-On Ubuntu or Linux Mint, install:
-
-```bash
-sudo apt install pkg-config libpipewire-0.3-dev libgbm-dev libclang-dev clang
-```
-
-Depending on the desktop session and distro, additional capture-related packages may still be required.
-
-### Run locally
-
-```bash
-cargo run --release
-```
-
-Then open the best local URL shown in the host TUI. The default one is usually:
-
-```text
-http://127.0.0.1:45080/
-```
-
-For host settings and session controls from the same machine, open:
-
-```text
-http://127.0.0.1:45080/admin
-```
-
-For unattended deployments after you have configured an access password or already approved at least one trusted browser:
-
-```bash
-cargo run --release -- --headless
-```
-
-To ask an already running local host for a fresh one-time pairing code without restarting it:
-
-```bash
-cargo run --release -- --generate-pair-code
-```
-
-To issue one one-time pairing code at startup without opening the TUI:
-
-```bash
-cargo run --release -- --headless --print-pair-code
-```
-
-To set a stable device code and unattended access password before launching the host:
-
-```bash
-cargo run --release -- --set-device-code WORKSTATION-01
-cargo run --release -- --set-access-password "use-a-long-unique-password-here"
-cargo run --release -- --print-device
-```
-
-You can also generate a random long access password from the host TUI. It is stored hashed in the app config and shown in the TUI security panel until you replace it or exit.
-
-### Optional: one-command `.env` bootstrap
-
-For a local private checkout, create `.private/rustopviewer.env` from `.env.example` and set:
-
-```text
-ROV_DEVICE_CODE=WORKSTATION-01
-ROV_ACCESS_PASSWORD=use-a-long-unique-password-here
-ROV_ADMIN_TOKEN=use-a-different-long-random-admin-token
-ROV_MASTERDALE_TOKEN=use-the-same-token-as-masterdale
-# Optional: set all five ROV_OIDC_* values shown in .env.example.
-```
-
-Then one normal launch is enough:
-
-```bash
-cargo run --release -- --headless
-```
-
-At startup, ROV reads `.private/rustopviewer.env` first, falls back to `.env` for older local checkouts, applies the device code and access password to the user config, and uses `ROV_ADMIN_TOKEN` to protect loopback `/api/admin/*` calls. Open the admin UI with:
-
-```text
-http://127.0.0.1:45080/admin?token=use-a-different-long-random-admin-token
-```
-
-The page stores that admin token only in browser session storage and removes it from the address bar. Keep `.private/rustopviewer.env` and `.env` out of git and treat `ROV_ACCESS_PASSWORD`, `ROV_ADMIN_TOKEN`, and `ROV_MASTERDALE_TOKEN` as real secrets.
-
-When `ROV_MASTERDALE_TOKEN` is set, the remote page can use the same bearer token as
-Masterdale for persistent view and approved input access. `DALE_TOKEN` from the process
-environment is accepted as a fallback, which lets a service share Masterdale's canonical
-environment file without copying the secret. This token does not authorize RustOpViewer's
-loopback-only admin API, and host-side pointer and keyboard permission switches still apply.
-
-LinuxMice OIDC is an optional browser sign-in layer. Configure all five `ROV_OIDC_*`
-values from `.env.example`; the redirect must use HTTPS except during loopback testing,
-and `ROV_OIDC_ALLOWED_SUBJECTS` must explicitly list the LinuxMice owner UUIDs allowed
-to control the screen. Provider tokens are discarded after verification and RustOpViewer
-issues its normal bounded local session. Pairing, password, and Masterdale bearer access
-remain independent recovery and automation paths.
-
-For an X11 media box that already keeps Masterdale's canonical environment
-somewhere under the user home, the example user unit at
-`packaging/systemd/rustopviewer-masterdale.service` loads
-`%h/.config/rustopviewer/masterdale.env` (`DALE_TOKEN` is accepted as
-`ROV_MASTERDALE_TOKEN`). Point that file at Masterdale's env, or copy only the
-shared token keys, so you keep one token source of truth without embedding a
-repo checkout path in the unit. Adjust `DISPLAY` and `XAUTHORITY` if the
-desktop uses different values.
-
-The host having the token in env does not authenticate a phone browser by
-itself. The browser must still send that bearer once per origin (stored under
-`masterdale.dashboard.token` in that origin's localStorage) or use LinuxMice
-OIDC, which issues a normal RustOpViewer session cookie and avoids pasting the
-token.
-
-Screen capture sleeps while no authenticated viewer is active and wakes on the next authorized
-request. A headless media box therefore does not continuously encode its desktop in the
-background.
-
-On Windows, the repo's Cargo config runs a copied temp executable so a previously opened ROV window does not keep `target\release\rustopviewer.exe` locked during the next rebuild.
-
-### First local browser session
-
-1. Launch ROV on the host machine.
-2. Open the best available URL shown in the host TUI, typically `http://127.0.0.1:45080/`.
-3. Use the browser dashboard to connect with the configured device code and unattended password, or generate a one-time pairing code in the host TUI and enter it in the browser page.
-4. Leave **Remember this browser on this device** enabled if you want that browser to reconnect later without another code.
-5. Use the remote page to control the desktop.
-
-Desktop browsers:
-
-- Use the physical keyboard directly while the Keys indicator is captured; release or recapture it from the toolbar.
-- Use the normal mouse wheel for vertical scrolling.
-- Use `Shift+wheel` for horizontal scrolling when the local mouse supports it.
-- Use browser zoom controls inside ROV for closer inspection after the default fit-to-window layout loads.
-
-Mobile browsers:
-
-- Keep the on-screen keyboard, tool sheet, and touch control buttons.
-- Use Compose for buffered text sends, or Live when you want characters and backspace to reach the host immediately.
-- Use touch panning and pinch gestures inside the frame viewer.
-
-### Optional: headless runtime with remembered access
-
-If you want ROV to stay available without a terminal window, either configure an unattended access password before launch or approve a browser once from the host TUI.
-
-Password-based path:
-
-1. Set a device code and long access password with `--set-device-code` and `--set-access-password`.
-2. Launch `rustopviewer --headless`.
-3. Open the host URL and connect from the browser dashboard.
-
-Pair-code path:
-
-1. Start ROV normally once and pair a browser with **Remember this browser on this device** enabled.
-2. Stop the TUI.
-3. Launch `rustopviewer --headless`.
-4. Revisit from the remembered browser and let it restore a fresh short-lived session automatically.
-
-A brand-new browser without the unattended password still needs a host-generated one-time pairing code first.
-If you are deliberately launching headless for that first approval, either start it with `--print-pair-code` so the host logs one code at startup, or launch it normally and use `rustopviewer --generate-pair-code` later without interrupting the running service.
-
-## Optional Deployment Paths
-
-ROV works out of the box on one machine with no extra network setup. The options below are for publishing that same loopback-first host to other private paths you already trust.
-
-### Optional: extra local reverse-proxy listeners
-
-Some trusted local reverse proxies or containerized gateways cannot reach `127.0.0.1` on the host directly.
-For those cases, you can bind additional host-local IPv4 listeners with:
-
-```bash
-ROV_EXTRA_LISTEN_ADDRS=172.17.0.1,172.18.0.1 rustopviewer --headless
-```
-
-This is meant for host-local infrastructure you already control, such as a local Docker gateway or a private reverse proxy on the same machine.
-
-### Optional: Tailscale private URL
-
-ROV keeps its remote-control server on local loopback and can additionally publish it to private Tailscale clients in two ways:
-
-- Through Tailscale Serve HTTP inside the tailnet
-- Directly on the device's Tailscale tailnet address
-- Through optional Tailscale Serve HTTPS if you want a browser-trusted URL later
-
-This means the Rust app itself does not need to open a normal LAN-facing remote-control socket and still avoids direct public internet exposure by default.
-
-You can do this from inside the host TUI with the **Enable Tailscale URL** action.
-
-1. In the host TUI, select **Enable Tailscale URL** and press `Enter`.
-
-If you prefer to do it manually on the host, run:
-
-```bash
-tailscale serve --bg --yes --http 45080 127.0.0.1:45080
-```
-
-2. Tailscale will print an `http://...ts.net:45080` URL for this machine.
-3. Open that URL from any browser that is on the same tailnet.
-
-This is the preferred private-path option because it keeps traffic inside the encrypted Tailscale boundary and proxies cleanly back to loopback.
-
-### Optional: browser-trusted HTTPS later
-
-If you eventually want a browser-trusted HTTPS URL, Tailscale HTTPS certificates still need to be enabled for the tailnet first.
-
-### Reverse proxy or tunnel deployment
-
-ROV is designed to be published from loopback through infrastructure you already trust.
-
-- Keep the host TUI runtime listening on `127.0.0.1`.
-- Proxy a hostname or subpath back to that loopback listener.
-- Preserve same-origin requests.
-- Preserve cookies when possible. If an intermediary is stricter about background cookie handling, the built-in client can also continue same-origin API requests with the browser-bound session and remembered-browser tokens it already received from the host.
-- If you mount ROV under a stripped path prefix, the built-in browser client now uses relative API paths so it can still reach `api/*` correctly.
-
-## Repository Standards
-
-This repository is set up to support long-term open source development:
-
-- Dual licensed under MIT or Apache-2.0
-- Issue templates and PR template
-- Contributing, security, roadmap, and architecture docs
-
-See:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [SECURITY.md](SECURITY.md)
-- [ROADMAP.md](ROADMAP.md)
-- [docs/architecture.md](docs/architecture.md)
-- [CHANGELOG.md](CHANGELOG.md)
-
-## Development
-
-Recommended local validation:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-```
-
-## Security Model
-
-- The host runtime listens on loopback and, when available, the current Tailscale tailnet IPs, not on the normal LAN by default.
-- Opening the browser page is not enough to gain control. A new browser session must be paired with a one-time code generated in the host TUI.
-- A successfully paired browser can optionally become a remembered browser on that device and later refresh its normal session automatically.
-- Headless runtime is intended for already approved browsers; a new browser still needs a host-approved one-time code first.
-- Approved sessions are browser-bound, single-device, host-revocable, idle out after 30 minutes without activity, and expire after 24 hours at most.
-- Remembered-browser trust survives host restarts until the host revokes it or the host-side trust record expires, and it still depends on the browser retaining its local browser storage.
-- A successful pairing restores remote pointer and keyboard control automatically unless ROV is running elevated.
-- Running ROV elevated forces remote input back to view-only.
-- The host TUI can revoke all remembered browsers immediately.
-- Reverse proxies and tunnels should target loopback rather than widening the app's own bind surface.
-
-## Roadmap Highlights
-
-- Better precision and calibration for scaled displays
-- Better gesture calibration across touch and desktop browsers
-- Lower-latency streaming transport
-- Clipboard sync
-- File transfer
-- Tray mode and startup behavior across Linux and Windows
+Versions up to 0.2 were a Rust program with its own registry, pairing and
+a shared bearer token; they are kept at the git tag `rust-era`.
 
 ## License
 
-Licensed under either of:
-
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-
-at your option.
+MIT or Apache-2.0.

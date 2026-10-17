@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+Rewritten in Go with no third-party modules: X11 hosts reached over SSH (a
+private socket, a key per session), a browser viewer, and `lmice desktop`.
+The Rust version (registry, pairing, shared token) is at the tag `rust-era`.
+
+
 All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog and this project aims to follow Semantic Versioning over time.

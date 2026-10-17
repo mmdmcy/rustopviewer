@@ -1,39 +1,24 @@
 # Architecture
 
-rustopviewer currently has five main layers:
+Four files, Go standard library only:
 
-## Host runtime and TUI
+- `x11.go`: an X11 client over the local socket. Connection setup with the
+  MIT-MAGIC-COOKIE-1 from the Xauthority file, GetImage of the root window
+  (ZPixmap, 32 bits per pixel), the keyboard mapping (GetKeyboardMapping),
+  and XTEST FakeInput for pointer moves, buttons (4/5 = wheel) and keys.
+- `keys.go`: browser key names to X keysyms.
+- `server.go`: HTTP. `/?k=KEY` sets the session cookie; `/` and
+  `/viewer.js` are the page; `/stream` is multipart JPEG; `/input` takes a
+  JSON batch of events; `/info` gives the screen size. A capture loop runs
+  only while someone watches and publishes a frame only when the picture
+  changed (CRC-32 of the pixels), at most 8 per second.
+- `main.go`: `serve`, listening on a private socket or loopback only.
 
-- `src/main.rs` starts the app, initializes platform-specific process state, loads config, and launches host/agent/standalone modes plus the local TUI or headless runtime.
-- `src/tui.rs` renders the local terminal control surface where users choose monitors, inspect access paths, and manage pairing/session state.
+## With LinuxMice
 
-## Fleet registry
-
-- `src/fleet.rs` owns the in-memory device roster used by `rustopviewer host`.
-- Agents call `POST /v1/fleet/register` and `POST /v1/fleet/heartbeat` with the shared Masterdale bearer.
-- The browser dashboard and `rustopviewer devices` read `GET /v1/fleet/devices`.
-
-## Capture and state
-
-- `src/capture.rs` enumerates monitors and captures frames from the selected display.
-- `src/state.rs` stores config, monitor inventory, capture status, fleet role, and the latest encoded frame.
-- `src/config.rs` persists local application settings such as the auth token and capture preferences.
-
-## Remote control server
-
-- `src/server.rs` serves the browser UI, authenticated API endpoints, and fleet registry routes.
-- `assets/remote.html` contains the current desktop/mobile browser client, including the fleet device list after Masterdale login.
-- `src/security.rs` owns the one-time pairing flow, short-lived remote sessions, and remembered-browser trust records.
-
-## Input injection
-
-- `src/input.rs` translates API requests into cross-platform mouse and keyboard events.
-
-## Design Principles
-
-- Keep the trust boundary obvious.
-- Prefer small modules with explicit responsibilities.
-- Treat remote-input behavior as security-sensitive.
-- Make degraded states visible instead of silently failing.
-- Keep local-first operation simple, then layer private publishing paths on top.
-- Use one shared Masterdale bearer for the private fleet; do not unlock admin with that bearer.
+`lmice desktop DEVICE` asks the device for its home and viewer version,
+opens one SSH session through the fleet's pinned keys (and jump, if any)
+that forwards a free local port to the device's socket and runs
+`rustopviewer serve --until-stdin-closes`, reads the `ready key=` line,
+opens the browser, and ends the session (and with it the viewer) when you
+press Enter.

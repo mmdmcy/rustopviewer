@@ -1,21 +1,12 @@
 # Roadmap
 
-## Near-Term
-
-- Improve tap precision and optional calibration for scaled displays.
-- Add smoother viewport navigation and gesture tuning across touch and desktop browsers.
-- Add a system tray mode and startup behavior on Linux and Windows.
-- Improve stream responsiveness and bandwidth efficiency.
-
-## Mid-Term
-
-- Replace JPEG polling with a lower-latency transport such as WebRTC.
-- Add clipboard sync.
-- Add file transfer.
-- Add better observability and diagnostics for capture failures.
-
-## Long-Term
-
-- Support unattended access workflows with stronger operational safeguards.
-- Add additional client surfaces beyond the built-in browser UI.
-- Evolve ROV into a robust remote access platform with clear extension points.
+1. **Linux X11 hosts** (done in 0.3): screen, mouse, keyboard, browser viewer.
+2. **Windows hosts**: capture and input through Windows' own DLLs (no
+   third-party code), reached through a WSL distribution on the same
+   machine so Windows itself opens no port.
+3. **Choosing a monitor** on multi-monitor desktops, and lower bandwidth
+   (sending only changed areas).
+4. **Clipboard** in both directions.
+5. **Phones**: sign-in through an OpenID Connect provider for viewers that
+   cannot open an SSH tunnel.
+6. **Wayland** hosts, through the desktop portal.
