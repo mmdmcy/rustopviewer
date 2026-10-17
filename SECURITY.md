@@ -1,26 +1,19 @@
-# Security Policy
+# Security
 
-## Supported Versions
+RustOp Viewer controls a desktop, so it is built to be reachable only by
+you:
 
-ROV is early-stage software. Security fixes will be applied to the latest main branch first.
+- It never listens on a network interface: a Unix socket (directory 0700,
+  socket 0600) or a loopback address; any other address is refused.
+- Access goes through SSH, so SSH's keys and host keys are the
+  authentication; the viewer adds a random 256-bit key per session.
+- The key becomes an HttpOnly, SameSite=Strict cookie. Requests must name a
+  loopback host (no DNS rebinding); browsers' cross-site requests and
+  foreign origins are refused; input must be JSON (no form posts); pages
+  forbid framing and load only their own scripts.
+- With `--until-stdin-closes` it stops when the SSH session ends.
 
-## Reporting a Vulnerability
+Version 0.2 and earlier (Rust) used a shared bearer token across devices;
+if you ran it, stop its services and rotate that token.
 
-Please do not open public issues for security vulnerabilities involving:
-
-- Authentication bypass
-- Unauthorized remote control
-- Input injection escalation
-- Tailscale or network exposure misconfiguration guidance
-- Sensitive data leakage
-
-Instead, report vulnerabilities privately through GitHub Security Advisories for this repository once the GitHub repo is live.
-
-When reporting, include:
-
-- A clear description of the issue
-- Impact and attack preconditions
-- Reproduction steps
-- Any logs, screenshots, or proof-of-concept details needed to verify safely
-
-We will acknowledge valid reports as quickly as possible and coordinate a fix before public disclosure when appropriate.
+Report a vulnerability through a private security advisory on GitHub.
