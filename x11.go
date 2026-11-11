@@ -24,19 +24,22 @@ var le = binary.LittleEndian
 // X11 is one connection to an X server. Its methods are safe to call from
 // several goroutines.
 type X11 struct {
-	mu        sync.Mutex
-	conn      net.Conn
-	r         *bufio.Reader
-	seq       uint16
-	Root      uint32
-	Width     int
-	Height    int
-	Depth     byte
-	minCode   byte
-	maxCode   byte
-	xtest     byte              // XTEST major opcode, 0 when missing
-	keys      map[uint32]keyRef // keysym -> keycode and whether Shift is needed
-	byteOrder byte
+	mu         sync.Mutex
+	conn       net.Conn
+	r          *bufio.Reader
+	seq        uint16
+	Root       uint32
+	Width      int
+	Height     int
+	Depth      byte
+	minCode    byte
+	maxCode    byte
+	idBase     uint32 // resource IDs this client may create: base | bits of mask
+	idMask     uint32
+	maxRequest int               // the longest request the server takes, in bytes
+	xtest      byte              // XTEST major opcode, 0 when missing
+	keys       map[uint32]keyRef // keysym -> keycode and whether Shift is needed
+	byteOrder  byte
 }
 
 type keyRef struct {
@@ -119,6 +122,8 @@ func (x *X11) parseSetup(d []byte) error {
 	if len(d) < 32 {
 		return errors.New("X setup reply too short")
 	}
+	x.idBase, x.idMask = le.Uint32(d[4:]), le.Uint32(d[8:])
+	x.maxRequest = int(le.Uint16(d[18:])) * 4
 	vendorLen := int(le.Uint16(d[16:]))
 	screens := d[20]
 	formats := int(d[21])
@@ -153,8 +158,22 @@ func xauthPaths() []string {
 }
 
 // DialX11 connects to a local display (":0") with the cookie from
-// $XAUTHORITY or ~/.Xauthority.
+// $XAUTHORITY or ~/.Xauthority, for the screen, mouse and keyboard.
 func DialX11(display string) (*X11, error) {
+	x, err := connectX(display, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	if err := x.prepareInput(); err != nil {
+		x.Close()
+		return nil, err
+	}
+	return x, nil
+}
+
+// connectX opens a local display and does the connection setup; bufSize
+// is the read buffer (large for screenshots, small otherwise).
+func connectX(display string, bufSize int) (*X11, error) {
 	n, err := parseDisplay(display)
 	if err != nil {
 		return nil, err
@@ -173,7 +192,7 @@ func DialX11(display string) (*X11, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to display %s: %w", display, err)
 	}
-	x := &X11{conn: conn, r: bufio.NewReaderSize(conn, 1<<20)}
+	x := &X11{conn: conn, r: bufio.NewReaderSize(conn, bufSize)}
 	if err := x.setup(cookie); err != nil {
 		conn.Close()
 		return nil, err
@@ -200,9 +219,11 @@ func (x *X11) setup(cookie []byte) error {
 		}
 		return fmt.Errorf("X server refused the connection: %s", strings.TrimSpace(string(reason)))
 	}
-	if err := x.parseSetup(data); err != nil {
-		return err
-	}
+	return x.parseSetup(data)
+}
+
+// prepareInput finds XTEST and the keyboard mapping.
+func (x *X11) prepareInput() error {
 	if x.byteOrder != 0 {
 		return errors.New("only little-endian X image formats are supported")
 	}
