@@ -121,6 +121,13 @@ func serve(args []string) error {
 		return err
 	}
 	defer screen.Close()
+	var clip Clipboard
+	if c, err := DialClipboard(*display); err != nil {
+		fmt.Fprintln(os.Stderr, "rustopviewer: clipboard off:", err)
+	} else {
+		defer c.Close()
+		clip = c
+	}
 	key, err := newKey()
 	if err != nil {
 		return err
@@ -134,7 +141,7 @@ func serve(args []string) error {
 		defer os.Remove(where)
 	}
 	srv := &http.Server{
-		Handler:           NewServer(key, screen),
+		Handler:           NewServer(key, screen, clip),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	fmt.Printf("ready key=%s\n", key)

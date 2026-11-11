@@ -4,14 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RustOp Viewer</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  #screen { width: 100vw; height: 100vh; object-fit: contain; display: block; cursor: default; user-select: none; -webkit-user-drag: none; }
-  #status { position: fixed; left: 8px; bottom: 6px; font: 12px system-ui, sans-serif; color: #aaa; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 4px; pointer-events: none; }
-</style>
+<link rel="stylesheet" href="/viewer.css">
 </head>
 <body>
 <img id="screen" alt="remote screen" draggable="false">
+<div id="bar" hidden>
+  <button id="paste" type="button" title="Send this computer's clipboard to the remote and paste it there (Ctrl+V does the same)">Paste here</button>
+  <button id="copy" type="button" title="Put the remote's clipboard on this computer (copying on the remote does the same)">Copy from remote</button>
+</div>
+<div id="clip" hidden>
+  <p id="clipnote"></p>
+  <textarea id="cliptext" spellcheck="false" aria-label="clipboard text"></textarea>
+  <div><button id="clipsend" type="button">Send to remote</button> <button id="clipclose" type="button">Close</button></div>
+</div>
 <div id="status">connecting…</div>
 <script src="/viewer.js"></script>
 </body>

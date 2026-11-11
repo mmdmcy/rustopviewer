@@ -12,6 +12,9 @@ you:
   foreign origins are refused; input must be JSON (no form posts); pages
   forbid framing and load only their own scripts.
 - With `--until-stdin-closes` it stops when the SSH session ends.
+- Clipboard text travels only in same-origin JSON POSTs, never in a URL;
+  it is text only, at most 1 MB, and never logged. The host keeps the
+  viewer's text only while it owns the clipboard.
 
 Version 0.2 and earlier (Rust) used a shared bearer token across devices;
 if you ran it, stop its services and rotate that token.
