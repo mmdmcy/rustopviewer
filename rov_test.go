@@ -42,7 +42,7 @@ func request(method, target, host string, headers map[string]string, body string
 
 func TestOnlyTheKeyHolderOnLoopbackGetsIn(t *testing.T) {
 	screen := &fakeScreen{}
-	s := NewServer("secret", screen)
+	s := NewServer("secret", screen, nil)
 	cookie := map[string]string{"Cookie": cookieName + "=secret"}
 	json := map[string]string{"Cookie": cookieName + "=secret", "Content-Type": "application/json"}
 

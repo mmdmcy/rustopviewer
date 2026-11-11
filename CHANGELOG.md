@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Clipboard both ways, text only, up to 1 MB, on X11 hosts: Ctrl+V or
+  **Paste here** in the viewer pastes this computer's clipboard on the
+  remote; copying on the remote, or **Copy from remote**, puts the text on
+  this computer. When the browser refuses clipboard access, the page says
+  so and offers a box to paste into or copy from.
+
+### Fixed
+
+- The viewer's styles were blocked by its own Content-Security-Policy (an
+  inline `<style>`), so the screen did not fit the window; they are served
+  as `viewer.css` now.
+- Input goes out one batch at a time, so a key cannot overtake an earlier
+  one on a slow link.
+
 ## 0.3.0
 
 Rewritten in Go with no third-party modules: X11 hosts reached over SSH (a

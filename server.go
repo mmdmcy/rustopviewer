@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"hash/crc32"
 	"image"
 	"image/jpeg"
@@ -28,6 +29,9 @@ var viewerHTML []byte
 //go:embed viewer.js
 var viewerJS []byte
 
+//go:embed viewer.css
+var viewerCSS []byte
+
 // Screen is what the server shows and drives: an X11 display, or another
 // platform later.
 type Screen interface {
@@ -36,6 +40,12 @@ type Screen interface {
 	Move(x, y int) error
 	Button(button int, down bool) error
 	Key(sym uint32, down, shiftHeld bool) error
+}
+
+// Clipboard is the host's clipboard, text only.
+type Clipboard interface {
+	SetText(text string) error
+	Text() (string, error)
 }
 
 func (x *X11) Size() (int, int) { return x.Width, x.Height }
@@ -52,6 +62,7 @@ const (
 type Server struct {
 	key    string
 	screen Screen
+	clip   Clipboard // nil when the host has none
 
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -61,8 +72,8 @@ type Server struct {
 	lastErr string
 }
 
-func NewServer(key string, screen Screen) *Server {
-	s := &Server{key: key, screen: screen}
+func NewServer(key string, screen Screen, clip Clipboard) *Server {
+	s := &Server{key: key, screen: screen, clip: clip}
 	s.cond = sync.NewCond(&s.mu)
 	go s.captureLoop()
 	return s
@@ -191,17 +202,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/viewer.js" && r.Method == http.MethodGet:
 		h.Set("Content-Type", "text/javascript; charset=utf-8")
 		w.Write(viewerJS)
+	case r.URL.Path == "/viewer.css" && r.Method == http.MethodGet:
+		h.Set("Content-Type", "text/css; charset=utf-8")
+		w.Write(viewerCSS)
 	case r.URL.Path == "/info" && r.Method == http.MethodGet:
 		width, height := s.screen.Size()
 		s.mu.Lock()
 		errText := s.lastErr
 		s.mu.Unlock()
 		h.Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"width": width, "height": height, "error": errText})
+		json.NewEncoder(w).Encode(map[string]any{"width": width, "height": height, "error": errText, "clipboard": s.clip != nil})
 	case r.URL.Path == "/stream" && r.Method == http.MethodGet:
 		s.stream(w, r)
 	case r.URL.Path == "/input" && r.Method == http.MethodPost:
 		s.input(w, r)
+	case r.URL.Path == "/clipboard/set" && r.Method == http.MethodPost:
+		s.clipboardSet(w, r)
+	case r.URL.Path == "/clipboard/get" && r.Method == http.MethodPost:
+		s.clipboardGet(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -263,9 +281,18 @@ type inputEvent struct {
 	Shift bool   `json:"s"`
 }
 
+// jsonOnly refuses anything but a JSON body: a page elsewhere cannot send
+// one without the browser asking this server first, which it refuses.
+func jsonOnly(w http.ResponseWriter, r *http.Request) bool {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return true
+	}
+	http.Error(w, "JSON only", http.StatusUnsupportedMediaType)
+	return false
+}
+
 func (s *Server) input(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		http.Error(w, "JSON only", http.StatusUnsupportedMediaType)
+	if !jsonOnly(w, r) {
 		return
 	}
 	var events []inputEvent
@@ -280,6 +307,66 @@ func (s *Server) input(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// clipboardSet makes the viewer's text the host's clipboard, so the next
+// paste on the host pastes it; clipboardGet hands the host's clipboard
+// text to the viewer. Both are same-origin JSON POSTs like /input, so the
+// text is never in a URL, and nothing here logs it.
+func (s *Server) clipboardSet(w http.ResponseWriter, r *http.Request) {
+	if !s.clipboardReady(w, r) {
+		return
+	}
+	var body struct {
+		Text *string `json:"text"`
+	}
+	// JSON can spell one byte of text in six ("\u0001").
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 6*maxClipboard+64)).Decode(&body)
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge) || err == nil && body.Text != nil && len(*body.Text) > maxClipboard:
+		http.Error(w, errClipboardTooBig.Error(), http.StatusRequestEntityTooLarge)
+		return
+	case err != nil || body.Text == nil:
+		http.Error(w, `send {"text": "..."}`, http.StatusBadRequest)
+		return
+	}
+	if err := s.clip.SetText(*body.Text); err != nil {
+		clipboardError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) clipboardGet(w http.ResponseWriter, r *http.Request) {
+	if !s.clipboardReady(w, r) {
+		return
+	}
+	text, err := s.clip.Text()
+	if err != nil {
+		clipboardError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"text": text})
+}
+
+func (s *Server) clipboardReady(w http.ResponseWriter, r *http.Request) bool {
+	if s.clip == nil {
+		http.Error(w, "this host has no clipboard RustOp Viewer can use", http.StatusNotImplemented)
+		return false
+	}
+	return jsonOnly(w, r)
+}
+
+// clipboardError answers with the error's own words, which never hold the
+// clipboard's text.
+func clipboardError(w http.ResponseWriter, err error) {
+	status := http.StatusBadGateway
+	if errors.Is(err, errClipboardTooBig) {
+		status = http.StatusRequestEntityTooLarge
+	}
+	http.Error(w, err.Error(), status)
 }
 
 func (s *Server) apply(e inputEvent) error {
