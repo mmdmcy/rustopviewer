@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type fakeScreen struct {
@@ -175,5 +176,58 @@ func TestInfoNamesTheHostsSystem(t *testing.T) {
 	s.ServeHTTP(w, request("GET", "/info", "127.0.0.1:9", map[string]string{"Cookie": cookieName + "=secret"}, ""))
 	if !strings.Contains(w.Body.String(), `"os":"`+runtime.GOOS+`"`) {
 		t.Errorf("/info does not say the host's system (the viewer swaps Control and ⌘ by it): %s", w.Body.String())
+	}
+}
+
+// countingScreen is a still screen that counts how often it is read.
+type countingScreen struct {
+	fakeScreen
+	mu    sync.Mutex
+	reads []time.Time
+}
+
+func (c *countingScreen) Capture() ([]byte, error) {
+	c.mu.Lock()
+	c.reads = append(c.reads, time.Now())
+	c.mu.Unlock()
+	return make([]byte, 4*2*4), nil
+}
+
+func (c *countingScreen) since(t time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, r := range c.reads {
+		if r.After(t) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestAStillScreenIsReadLessUntilInputComes(t *testing.T) {
+	screen := &countingScreen{}
+	s := NewServer("secret", screen, nil)
+	s.mu.Lock()
+	s.viewers++ // someone watches
+	s.mu.Unlock()
+	s.cond.Broadcast()
+	defer func() {
+		s.mu.Lock()
+		s.viewers--
+		s.mu.Unlock()
+	}()
+	time.Sleep(time.Second) // past idleAfter unchanged frames
+	quiet := time.Now()
+	time.Sleep(time.Second)
+	if n := screen.since(quiet); n < 1 || n > 3 {
+		t.Fatalf("a still screen was read %d times in a second, want about 2", n)
+	}
+	poked := time.Now()
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, request("POST", "/input", "127.0.0.1:9", map[string]string{"Cookie": cookieName + "=secret", "Content-Type": "application/json"}, `[{"t":"move","x":1,"y":1}]`))
+	time.Sleep(400 * time.Millisecond)
+	if n := screen.since(poked); n < 3 {
+		t.Fatalf("after input the screen was read %d times in 0.4 s, want the full rate", n)
 	}
 }

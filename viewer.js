@@ -43,13 +43,16 @@ setInterval(() => {
 }, 30);
 
 // Where on the remote screen a point in the window is (the image is
-// scaled to fit, keeping its shape).
+// scaled to fit, keeping its shape). The frame's own size counts, as the
+// remote screen may have changed since /info; /info's is for before the
+// first frame.
 function position(ev) {
   const box = img.getBoundingClientRect();
-  if (!width || !height) return null;
-  const scale = Math.min(box.width / width, box.height / height);
-  const left = box.left + (box.width - width * scale) / 2;
-  const top = box.top + (box.height - height * scale) / 2;
+  const w = img.naturalWidth || width, h = img.naturalHeight || height;
+  if (!w || !h) return null;
+  const scale = Math.min(box.width / w, box.height / h);
+  const left = box.left + (box.width - w * scale) / 2;
+  const top = box.top + (box.height - h * scale) / 2;
   return { x: Math.round((ev.clientX - left) / scale), y: Math.round((ev.clientY - top) / scale) };
 }
 const button = (ev) => (ev.button === 0 ? 1 : ev.button === 1 ? 2 : ev.button === 2 ? 3 : 0);
