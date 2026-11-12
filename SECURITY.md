@@ -12,6 +12,13 @@ you:
   foreign origins are refused; input must be JSON (no form posts); pages
   forbid framing and load only their own scripts.
 - With `--until-stdin-closes` it stops when the SSH session ends.
+- On Windows it listens on `127.0.0.1` only. Over SSH, `serve` hands the
+  screen to the user's own Task Scheduler task (interactive token: it runs
+  only in that user's signed-in session, without administrator rights, no
+  trigger, no stored password). The session key reaches the task in a file
+  under `%LOCALAPPDATA%\rustopviewer`, which only the user and the PC's
+  administrators can open; Windows deletes it when `serve` exits, and the
+  task's side stops within a second. The task's log never holds the key.
 - Clipboard text travels only in same-origin JSON POSTs, never in a URL;
   it is text only, at most 1 MB, and never logged. The host keeps the
   viewer's text only while it owns the clipboard.
