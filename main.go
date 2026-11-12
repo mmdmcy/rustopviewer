@@ -26,6 +26,7 @@ const usage = `RustOp Viewer: your own devices' desktops in a browser, over SSH.
 
 Usage:
   rustopviewer serve [--socket PATH | --listen 127.0.0.1:PORT] [--display :0] [--until-stdin-closes]
+  rustopviewer install | uninstall      (macOS: let Screen Sharing show this Mac to serve)
   rustopviewer version
 
 serve prints "ready key=KEY" when it listens. Open http://127.0.0.1:PORT/?k=KEY
@@ -41,6 +42,11 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		if err := serve(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "rustopviewer:", err)
+			os.Exit(1)
+		}
+	case "install", "uninstall":
+		if err := platformCommand(os.Args[1], os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "rustopviewer:", err)
 			os.Exit(1)
 		}
@@ -111,23 +117,16 @@ func serve(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	socket := flags.String("socket", defaultSocket(), "Unix socket to listen on")
 	address := flags.String("listen", "", "loopback address instead of a socket")
-	display := flags.String("display", envOr("DISPLAY", ":0"), "X display")
+	display := flags.String("display", envOr("DISPLAY", ":0"), "X display (not on macOS)")
 	untilStdin := flags.Bool("until-stdin-closes", false, "stop when standard input closes (an SSH session ending)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	screen, err := DialX11(*display)
+	screen, clip, closeHost, err := openHost(*display)
 	if err != nil {
 		return err
 	}
-	defer screen.Close()
-	var clip Clipboard
-	if c, err := DialClipboard(*display); err != nil {
-		fmt.Fprintln(os.Stderr, "rustopviewer: clipboard off:", err)
-	} else {
-		defer c.Close()
-		clip = c
-	}
+	defer closeHost()
 	key, err := newKey()
 	if err != nil {
 		return err
@@ -145,7 +144,8 @@ func serve(args []string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	fmt.Printf("ready key=%s\n", key)
-	fmt.Fprintf(os.Stderr, "rustopviewer %s: %dx%d display %s on %s\n", version, screen.Width, screen.Height, *display, where)
+	width, height := screen.Size()
+	fmt.Fprintf(os.Stderr, "rustopviewer %s: %dx%d %s on %s\n", version, width, height, hostName(*display), where)
 	if *untilStdin {
 		go func() {
 			io.Copy(io.Discard, os.Stdin)

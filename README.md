@@ -23,8 +23,9 @@ small and hard to misuse:
   it through your browser.
 - **Standard library only.** Go, no third-party modules: it speaks the X11
   protocol itself (screen through GetImage, mouse and keyboard through the
-  X server's XTEST extension, the clipboard through X selections) and
-  streams JPEG to an `<img>`.
+  X server's XTEST extension, the clipboard through X selections), on a Mac
+  the VNC protocol to macOS's own Screen Sharing, and streams JPEG to an
+  `<img>`.
 
 ## Use
 
@@ -43,6 +44,37 @@ ssh -L 127.0.0.1:47800:/home/me/.local/state/rustopviewer/rov.sock server \
 # open http://127.0.0.1:47800/?k=KEY
 ```
 
+## A Mac
+
+On a Mac, macOS's own Screen Sharing shows the screen and takes the mouse
+and keyboard; RustOp Viewer talks to it on `127.0.0.1:5900` from the SSH
+session and serves the same viewer page. macOS does not let an SSH session
+capture the screen itself, and a program of its own would need macOS's
+Screen Recording and Accessibility permissions, asked again after updates.
+Screen Sharing already holds them, works at the lock screen too, and macOS
+starts it only when a connection comes. The clipboard goes through
+`pbpaste` and `pbcopy`.
+
+Once, on the Mac:
+
+```bash
+rustopviewer install
+```
+
+It makes a VNC password only RustOp Viewer knows (8 random characters in
+`~/.config/rustopviewer/vnc-password`, readable by this account only), puts
+it on the clipboard and opens System Settings → General → Sharing. There:
+turn on Screen Sharing, click ⓘ beside it, then Computer Settings…, tick
+"VNC viewers may control screen with password", paste the password and
+click OK. `install` waits until Screen Sharing takes it, then clears the
+clipboard. After that `rustopviewer serve` works on the Mac like anywhere
+else. `rustopviewer uninstall` moves the password aside; turning Screen
+Sharing off is System Settings' switch.
+
+Screen Sharing listens on every network the Mac joins (Apple's design;
+there is no setting to keep it to the Mac itself), guarded by the
+account's password and this VNC password; see [SECURITY](SECURITY.md).
+
 ## Clipboard
 
 Text goes both ways, up to 1 MB:
@@ -58,6 +90,12 @@ Text goes both ways, up to 1 MB:
   program in a remote terminal leaves your own clipboard alone. **Copy from
   remote** fetches it on demand.
 
+Between a Mac and a computer that is not one, Control and ⌘ change places:
+Ctrl+C, Ctrl+V and the other shortcuts of a PC keyboard do the Mac's ⌘C
+and ⌘V on a Mac, ⌘C and ⌘V on a Mac viewer do Ctrl+C and Ctrl+V on Linux,
+and the other key (the Windows key, or Control on the Mac) gives what is
+left. **Paste here** presses ⌘V on a Mac and Ctrl+V elsewhere.
+
 What the browser asks for: the viewer runs on `127.0.0.1`, which browsers
 count as a secure context, so the clipboard API is there. Ctrl+V needs no
 permission. **Paste here** reads the clipboard with
@@ -69,22 +107,24 @@ opens a box: paste into it and press Send, or copy the remote's text from
 it, already selected.
 
 The text travels only inside same-origin JSON requests, like mouse and
-keyboard input: never in a URL, and never logged. On the host RustOp
+keyboard input: never in a URL, and never logged. On an X11 host RustOp
 Viewer owns the X11 CLIPBOARD selection while it holds your text, so it
-stays pasteable until another program copies or the session ends. Images
-and files do not travel yet. From a Mac, ⌘V gives the remote your text
-but reaches it as Super+V; use **Paste here** or Control+V there.
+stays pasteable until another program copies or the session ends; on a
+Mac it is on the pasteboard like anything copied there. Images and files
+do not travel yet.
 
 ## Supported
 
-- Hosts: Linux with an X11 desktop (Cinnamon, MATE, Xfce, KDE on X11, …).
-  Windows hosts and Wayland are planned (see [ROADMAP](ROADMAP.md)).
+- Hosts: Linux with an X11 desktop (Cinnamon, MATE, Xfce, KDE on X11, …),
+  and macOS 12 or newer through Screen Sharing. Windows hosts and Wayland
+  are planned (see [ROADMAP](ROADMAP.md)).
 - Viewers: any current browser.
 
 ## Build
 
 ```bash
 go build -trimpath -ldflags='-s -w' .   # Go 1.24+, no dependencies
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' .   # a Mac's, from any machine
 go test ./...
 ```
 
