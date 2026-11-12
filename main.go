@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 const usage = `RustOp Viewer: your own devices' desktops in a browser, over SSH.
 
