@@ -1,3 +1,7 @@
+//go:build !windows
+
+// The fake pasteboard commands are shell scripts.
+
 package main
 
 import (
