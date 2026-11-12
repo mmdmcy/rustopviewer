@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -165,5 +166,14 @@ func TestKeyMapAndKeysyms(t *testing.T) {
 	}
 	if _, ok := keysym("Unidentified"); ok {
 		t.Error("unknown names are ignored")
+	}
+}
+
+func TestInfoNamesTheHostsSystem(t *testing.T) {
+	s := NewServer("secret", &fakeScreen{}, nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, request("GET", "/info", "127.0.0.1:9", map[string]string{"Cookie": cookieName + "=secret"}, ""))
+	if !strings.Contains(w.Body.String(), `"os":"`+runtime.GOOS+`"`) {
+		t.Errorf("/info does not say the host's system (the viewer swaps Control and ⌘ by it): %s", w.Body.String())
 	}
 }

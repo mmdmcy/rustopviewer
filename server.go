@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +33,8 @@ var viewerJS []byte
 //go:embed viewer.css
 var viewerCSS []byte
 
-// Screen is what the server shows and drives: an X11 display, or another
-// platform later.
+// Screen is what the server shows and drives: an X11 display, or macOS's
+// Screen Sharing (rfb.go).
 type Screen interface {
 	Size() (int, int)
 	Capture() ([]byte, error)
@@ -211,7 +212,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errText := s.lastErr
 		s.mu.Unlock()
 		h.Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"width": width, "height": height, "error": errText, "clipboard": s.clip != nil})
+		json.NewEncoder(w).Encode(map[string]any{"width": width, "height": height, "error": errText, "clipboard": s.clip != nil, "os": runtime.GOOS})
 	case r.URL.Path == "/stream" && r.Method == http.MethodGet:
 		s.stream(w, r)
 	case r.URL.Path == "/input" && r.Method == http.MethodPost:
