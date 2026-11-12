@@ -15,7 +15,15 @@
   line.
 - `serve --open` opens this computer's browser on the viewer, to try it on
   the machine itself.
-
+- macOS hosts, through macOS's own Screen Sharing: `rustopviewer serve`
+  on a Mac talks VNC to it on `127.0.0.1:5900` with a password only RustOp
+  Viewer knows, and the clipboard goes through `pbpaste` and `pbcopy`.
+  `rustopviewer install` sets that up once (it makes the password, opens
+  System Settings at Sharing and waits until Screen Sharing takes it).
+  RustOp Viewer itself asks macOS for no permission and keeps nothing
+  running.
+- Control and ⌘ change places between a Mac and a computer that is not
+  one, so each keyboard's own shortcuts work on the other side.
 - Clipboard both ways, text only, up to 1 MB, on X11 hosts: Ctrl+V or
   **Paste here** in the viewer pastes this computer's clipboard on the
   remote; copying on the remote, or **Copy from remote**, puts the text on

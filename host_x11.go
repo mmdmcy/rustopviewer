@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package main
 
@@ -39,5 +39,5 @@ func platformCommand(name string, _ []string) error {
 	if name == "host" {
 		return errors.New("host is the Windows desktop's side of serve")
 	}
-	return fmt.Errorf("%s is for Windows hosts; on Linux nothing needs installing: an SSH session runs rustopviewer serve", name)
+	return fmt.Errorf("%s is for Windows and macOS hosts; on Linux nothing needs installing: an SSH session runs rustopviewer serve", name)
 }

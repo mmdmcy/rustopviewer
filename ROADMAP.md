@@ -6,11 +6,13 @@
    screen shown by a per-user Task Scheduler task only while a session
    lasts. Next: other monitors than the primary, and DXGI Desktop
    Duplication if GDI proves too slow on a real 4K screen.
-3. **Choosing a monitor** on multi-monitor desktops, and lower bandwidth
+3. **macOS hosts** (done, unreleased): through macOS's own Screen Sharing,
+   the clipboard with pbcopy and pbpaste.
+4. **Choosing a monitor** on multi-monitor desktops, and lower bandwidth
    (sending only changed areas).
-4. **Clipboard** in both directions: text on Linux X11 hosts is done
-   (unreleased, up to 1 MB), and on Windows hosts. Next: macOS hosts,
-   images and files, and ⌘ sent as Ctrl from Mac viewers.
-5. **Phones**: sign-in through an OpenID Connect provider for viewers that
+5. **Clipboard** in both directions: text on Linux X11, Windows and macOS
+   hosts is done (unreleased, up to 1 MB), and Control and ⌘ change places
+   between a Mac and a computer that is not one. Next: images and files.
+6. **Phones**: sign-in through an OpenID Connect provider for viewers that
    cannot open an SSH tunnel.
-6. **Wayland** hosts, through the desktop portal.
+7. **Wayland** hosts, through the desktop portal.

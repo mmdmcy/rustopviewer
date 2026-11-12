@@ -1,7 +1,7 @@
 # Architecture
 
 Go standard library only; the X11 host in five files, the Windows host
-in five more, and the page:
+in five more, the macOS host in three, and the page:
 
 - `x11.go`: an X11 client over the local socket. Connection setup with the
   MIT-MAGIC-COOKIE-1 from the Xauthority file, GetImage of the root window
@@ -14,7 +14,33 @@ in five more, and the page:
   the server accepts), and reads another program's text with
   ConvertSelection and GetProperty, INCR included. Text only, at most 1 MB
   either way; more is refused with a message.
-- `keys.go`: browser key names to X keysyms.
+- `rfb.go`: a VNC (RFB 3.8) client for a VNC server on loopback, as a
+  screen: VNC authentication (security type 2, DES), a 32-bit BGRX pixel
+  format like X11's, Raw and CopyRect updates and desktop size changes
+  kept in a framebuffer, PointerEvent (buttons as a mask, 4/5 = wheel) and
+  KeyEvent (X keysyms, as keys.go makes them). A capture asks for what
+  changed and waits for it, at most a second. A dropped connection is
+  opened again on the next call, with the same password. Anything the
+  server sends that was not asked for ends the connection with its name.
+- `pasteboard.go`: a clipboard through two commands; on a Mac `pbpaste`
+  and `pbcopy`, with `LANG=en_US.UTF-8` (without it they speak MacRoman
+  and lose what it lacks). Text only, at most 1 MB either way.
+- `host_x11.go` (Linux): the X11 screen and clipboard. `host_darwin.go`
+  (macOS): macOS's own Screen Sharing on `127.0.0.1:5900` through `rfb.go`,
+  with the VNC password from `~/.config/rustopviewer/vnc-password` (refused
+  when others can read it), and the pasteboard; `rustopviewer install`
+  makes the password and waits until Screen Sharing takes it.
+
+  Why Screen Sharing on a Mac (measured on macOS 26.6.2): an SSH session
+  cannot capture the screen (`screencapture` says "could not create image
+  from rect"), so a program of our own would have to run in the signed-in
+  session with macOS's Screen Recording and Accessibility permissions,
+  which macOS keeps per program path (a new path with every versioned
+  install) and asks for again, and would need cgo or hand-written assembly
+  to reach CoreGraphics. Screen Sharing is Apple's, holds those
+  permissions, works at the lock screen and starts only on a connection;
+  RustOp Viewer stays a cross-built Go binary that asks macOS for nothing.
+- `keys.go`: browser key names to X keysyms (X11 and RFB both use them).
 - `server.go`: HTTP. `/?k=KEY` sets the session cookie; `/`,
   `/viewer.js` and `/viewer.css` are the page; `/stream` is multipart
   JPEG; `/input` takes a JSON batch of events; `/clipboard/set` and
@@ -23,7 +49,9 @@ in five more, and the page:
   runs only while someone watches and publishes a frame only when the
   picture changed (CRC-32 of the pixels), at most 8 per second.
 - `main.go`: `serve`, listening on a private socket or loopback only;
-  `host_x11.go` opens the X11 host, `host_windows.go` the Windows one.
+  `install` and `uninstall` for what a platform needs once; `host_x11.go`
+  opens the X11 host, `host_windows.go` the Windows one, `host_darwin.go`
+  the macOS one.
 - `screen_windows.go`: the primary monitor read with GDI (BitBlt into a
   bitmap, GetDIBits out of it, CAPTUREBLT for layered windows), per-monitor
   DPI awareness so a scaled display is read in real pixels, SendInput for
@@ -53,7 +81,10 @@ in five more, and the page:
   browser's paste event hand over its clipboard (no permission needed);
   input waits until the host owns that text, then the keys go through.
   After a copy shortcut it fetches the host's text and writes it with
-  `navigator.clipboard.writeText()` when it is new.
+  `navigator.clipboard.writeText()` when it is new. `/info` says the
+  host's system; between a Mac and a computer that is not one, Control and
+  Meta (⌘) change places in the keys it sends, and the paste it presses is
+  ⌘V on a Mac.
 
 ## With LinuxMice
 
