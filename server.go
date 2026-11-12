@@ -56,14 +56,19 @@ const (
 	// minFrameGap caps the frame rate; capture and JPEG encoding of a
 	// large screen take most of it anyway.
 	minFrameGap = 125 * time.Millisecond
-	jpegQuality = 70
-	maxEvents   = 400
+	// After idleAfter captures in a row showed nothing new, the screen is
+	// read twice a second until it changes or input comes.
+	idleFrameGap = 500 * time.Millisecond
+	idleAfter    = 4
+	jpegQuality  = 70
+	maxEvents    = 400
 )
 
 type Server struct {
 	key    string
 	screen Screen
-	clip   Clipboard // nil when the host has none
+	clip   Clipboard     // nil when the host has none
+	poke   chan struct{} // input came: capture at full rate again
 
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -74,16 +79,18 @@ type Server struct {
 }
 
 func NewServer(key string, screen Screen, clip Clipboard) *Server {
-	s := &Server{key: key, screen: screen, clip: clip}
+	s := &Server{key: key, screen: screen, clip: clip, poke: make(chan struct{}, 1)}
 	s.cond = sync.NewCond(&s.mu)
 	go s.captureLoop()
 	return s
 }
 
 // captureLoop grabs the screen while someone watches, and publishes a new
-// JPEG only when the picture changed.
+// JPEG only when the picture changed. A still screen is read twice a
+// second; a change or input brings it back to the full rate.
 func (s *Server) captureLoop() {
 	var lastSum uint32
+	unchanged := 0
 	for {
 		s.mu.Lock()
 		for s.viewers == 0 {
@@ -94,20 +101,30 @@ func (s *Server) captureLoop() {
 		pixels, err := s.screen.Capture()
 		if err == nil {
 			if sum := crc32.ChecksumIEEE(pixels); sum != lastSum || s.current() == nil {
-				lastSum = sum
+				lastSum, unchanged = sum, 0
 				w, h := s.screen.Size()
 				var encoded []byte
 				if encoded, err = encodeJPEG(pixels, w, h); err == nil {
 					s.publish(encoded, "")
 				}
+			} else {
+				unchanged++
 			}
 		}
 		if err != nil {
 			s.publish(nil, err.Error())
 			time.Sleep(time.Second)
 		}
-		if gap := minFrameGap - time.Since(started); gap > 0 {
-			time.Sleep(gap)
+		gap := minFrameGap
+		if unchanged >= idleAfter {
+			gap = idleFrameGap
+		}
+		if rest := gap - time.Since(started); rest > 0 {
+			select {
+			case <-time.After(rest):
+			case <-s.poke:
+				unchanged = 0
+			}
 		}
 	}
 }
@@ -300,6 +317,10 @@ func (s *Server) input(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&events); err != nil || len(events) > maxEvents {
 		http.Error(w, "bad input", http.StatusBadRequest)
 		return
+	}
+	select {
+	case s.poke <- struct{}{}:
+	default:
 	}
 	for _, e := range events {
 		if err := s.apply(e); err != nil {

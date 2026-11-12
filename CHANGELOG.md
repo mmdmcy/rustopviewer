@@ -30,7 +30,15 @@
   this computer. When the browser refuses clipboard access, the page says
   so and offers a box to paste into or copy from.
 
+### Changed
+
+- A still screen is read twice a second instead of eight times; a change
+  on the screen or input from the viewer brings back the full rate.
+
 ### Fixed
+
+- The pointer lands where it points after the remote screen changed size:
+  the viewer maps it by the frame's own size, not the size at the start.
 
 - The viewer's styles were blocked by its own Content-Security-Policy (an
   inline `<style>`), so the screen did not fit the window; they are served

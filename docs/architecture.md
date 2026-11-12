@@ -47,7 +47,9 @@ in five more, the macOS host in three, and the page:
   `/clipboard/get` take and give clipboard text as JSON POSTs; `/info`
   gives the screen size and whether the clipboard works. A capture loop
   runs only while someone watches and publishes a frame only when the
-  picture changed (CRC-32 of the pixels), at most 8 per second.
+  picture changed (CRC-32 of the pixels), at most 8 per second; after four
+  reads without a change it reads twice a second, until the picture
+  changes or input comes.
 - `main.go`: `serve`, listening on a private socket or loopback only;
   `install` and `uninstall` for what a platform needs once; `host_x11.go`
   opens the X11 host, `host_windows.go` the Windows one, `host_darwin.go`
