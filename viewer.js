@@ -8,7 +8,9 @@ let clipboard = false; // the host can share its clipboard
 let hold = false;      // a paste is setting the remote clipboard: input waits for it
 let sending = false;   // one input batch at a time, so keys arrive in order
 let known = null;      // the clipboard text both sides last agreed on
+let hostMac = false;   // the remote is a Mac
 const held = new Set();
+const viewerMac = /Mac|iPhone|iPad/.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
 
 function say(text) {
   status.textContent = text;
@@ -21,6 +23,7 @@ fetch("/info").then((r) => r.json()).then((info) => {
   width = info.width; height = info.height;
   say(`${width}×${height}` + (info.error ? ` · ${info.error}` : ""));
   clipboard = info.clipboard;
+  hostMac = info.os === "darwin";
   $("bar").hidden = !clipboard;
   if (clipboard) remoteText().then((text) => { known = text; }, () => {});
 });
@@ -63,6 +66,17 @@ img.addEventListener("wheel", (ev) => {
   if (steps) { send({ t: "wheel", dy: steps }); wheel -= steps * 60; }
 }, { passive: false });
 
+// Control and ⌘ change places when one side is a Mac and the other is not,
+// so this keyboard's shortcuts (Ctrl+C here, ⌘C on a Mac) do the same
+// there; the other key gives what is left (Control on a Mac, Super on Linux).
+function hostKey(key) {
+  if (hostMac === viewerMac) return key;
+  if (key === "Control") return "Meta";
+  if (key === "Meta" || key === "OS") return "Control";
+  return key;
+}
+const pasteKey = () => (hostMac ? "Meta" : "Control");
+
 const inPanel = (ev) => ev.target instanceof Element && ev.target.closest("#clip") !== null;
 const shortcut = (ev, keys) => (ev.ctrlKey || ev.metaKey) && !ev.altKey && keys.includes(ev.key.toLowerCase());
 
@@ -71,7 +85,7 @@ window.addEventListener("keydown", (ev) => {
   const paste = clipboard && !ev.repeat && shortcut(ev, ["v"]);
   if (!paste) ev.preventDefault(); // a paste shortcut goes on, so the browser fires "paste"
   held.add(ev.key);
-  send({ t: "key", k: ev.key, d: true, s: ev.shiftKey });
+  send({ t: "key", k: hostKey(ev.key), d: true, s: ev.shiftKey });
   if (paste) startPaste();
   else if (clipboard && !ev.repeat && shortcut(ev, ["c", "x"])) afterCopy();
 });
@@ -79,11 +93,11 @@ window.addEventListener("keyup", (ev) => {
   if (inPanel(ev)) return;
   ev.preventDefault();
   held.delete(ev.key);
-  send({ t: "key", k: ev.key, d: false, s: ev.shiftKey });
+  send({ t: "key", k: hostKey(ev.key), d: false, s: ev.shiftKey });
 });
 // Leaving the window must not leave keys pressed on the remote side.
 window.addEventListener("blur", () => {
-  for (const key of held) send({ t: "key", k: key, d: false, s: false });
+  for (const key of held) send({ t: "key", k: hostKey(key), d: false, s: false });
   held.clear();
 });
 
@@ -125,7 +139,7 @@ async function finishPaste(text, pressKeys) {
     if (new TextEncoder().encode(text).length > MAX_CLIP) throw new Error("the clipboard holds more than 1 MB of text; RustOp Viewer carries up to 1 MB");
     await post("/clipboard/set", { text });
     known = text;
-    if (pressKeys) for (const [k, d] of [["Control", true], ["v", true], ["v", false], ["Control", false]]) send({ t: "key", k, d, s: false });
+    if (pressKeys) for (const [k, d] of [[pasteKey(), true], ["v", true], ["v", false], [pasteKey(), false]]) send({ t: "key", k, d, s: false });
   } catch (e) {
     say(`paste: ${e.message}`);
   } finally {

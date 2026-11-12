@@ -28,7 +28,8 @@ const usage = `RustOp Viewer: your own devices' desktops in a browser, over SSH.
 
 Usage:
   rustopviewer serve [--socket PATH | --listen 127.0.0.1:PORT] [--display :0] [--until-stdin-closes] [--open]
-  rustopviewer install | uninstall      (Windows: the task that shows the desktop to SSH sessions)
+  rustopviewer install | uninstall      (Windows: the task that shows the desktop to SSH sessions;
+                                        macOS: let Screen Sharing show this Mac to serve)
   rustopviewer version
 
 serve prints "ready key=KEY" when it listens. Open http://127.0.0.1:PORT/?k=KEY
@@ -134,7 +135,7 @@ func serve(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.StringVar(&o.socket, "socket", defaultSocket(), "Unix socket to listen on")
 	flags.StringVar(&o.address, "listen", defaultListen, "loopback address instead of a socket")
-	flags.StringVar(&o.display, "display", envOr("DISPLAY", ":0"), "X display")
+	flags.StringVar(&o.display, "display", envOr("DISPLAY", ":0"), "X display (not on Windows or macOS)")
 	flags.BoolVar(&o.untilStdin, "until-stdin-closes", false, "stop when standard input closes (an SSH session ending)")
 	flags.BoolVar(&o.open, "open", false, "open this computer's browser on the viewer")
 	if err := flags.Parse(args); err != nil {
