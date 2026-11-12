@@ -4,6 +4,18 @@
 
 ### Added
 
+- Windows hosts (Windows 10 and 11): the primary monitor through GDI,
+  mouse and keyboard through SendInput (a character the host's layout has
+  goes as its key, so shortcuts work; any other as the character itself),
+  clipboard text both ways as CF_UNICODETEXT, real pixels on scaled
+  displays. Over SSH, `serve` hands the screen to a Task Scheduler task of
+  the user's that runs only in their signed-in session and only while the
+  session lasts; the first session sets it up (`install`, `uninstall`).
+  Listens on `127.0.0.1:47800` by default; `install.ps1` installs it in one
+  line.
+- `serve --open` opens this computer's browser on the viewer, to try it on
+  the machine itself.
+
 - Clipboard both ways, text only, up to 1 MB, on X11 hosts: Ctrl+V or
   **Paste here** in the viewer pastes this computer's clipboard on the
   remote; copying on the remote, or **Copy from remote**, puts the text on
@@ -17,6 +29,8 @@
   as `viewer.css` now.
 - Input goes out one batch at a time, so a key cannot overtake an earlier
   one on a slow link.
+- When a session ends, the connections still open (the screen's stream, a
+  kept-alive request) are closed too.
 
 ## 0.3.0
 
