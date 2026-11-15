@@ -2,7 +2,7 @@
 //
 // `rustopviewer serve` shows this machine's screen on a private Unix
 // socket (or a loopback address); nothing listens on the network. Reach it
-// through an SSH tunnel, which `lmice desktop DEVICE` opens for you, and a
+// through an SSH tunnel (by hand, or a fleet tool opens it for you), and a
 // fresh key per session. Standard library only.
 package main
 
@@ -33,7 +33,7 @@ Usage:
   rustopviewer version
 
 serve prints "ready key=KEY" when it listens. Open http://127.0.0.1:PORT/?k=KEY
-through an SSH tunnel to the socket; lmice desktop DEVICE does all of this.
+through an SSH tunnel to the socket (a fleet tool can do all of this for you).
 --open opens this computer's browser on it instead, to try it on the machine itself.
 Nothing listens on the network: a socket (default ~/.local/state/rustopviewer/rov.sock,
 only for this user) or a loopback address (on Windows always, default 127.0.0.1:47800).`

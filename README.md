@@ -4,7 +4,7 @@ Your own devices' desktops in a browser, over SSH.
 
 ```
 rustopviewer serve        on the device: shows its screen on a private socket
-lmice desktop DEVICE      from anywhere in your fleet: tunnel + browser
+ssh -L ... + a browser    from your computer: a tunnel to it, then its address
 ```
 
 RustOp Viewer shows a device's screen in a browser tab, sends your mouse
@@ -30,13 +30,7 @@ small and hard to misuse:
 
 ## Use
 
-With [LinuxMice](docs/architecture.md#with-linuxmice), from any controller:
-
-```bash
-lmice desktop server          # opens your browser on server's desktop
-```
-
-By hand, with plain SSH:
+With plain SSH:
 
 ```bash
 ssh -L 127.0.0.1:47800:/home/me/.local/state/rustopviewer/rov.sock server \
@@ -44,6 +38,10 @@ ssh -L 127.0.0.1:47800:/home/me/.local/state/rustopviewer/rov.sock server \
 # it prints: ready key=KEY
 # open http://127.0.0.1:47800/?k=KEY
 ```
+
+A fleet tool can do the same in one step:
+[driven by another tool](docs/architecture.md#driven-by-another-tool) says
+what it runs.
 
 ## Windows
 
@@ -67,6 +65,10 @@ ssh -L 127.0.0.1:47800:127.0.0.1:47800 pc \
 # it prints: ready key=KEY
 # open http://127.0.0.1:47800/?k=KEY
 ```
+
+A fleet tool can do the same in one step:
+[driven by another tool](docs/architecture.md#driven-by-another-tool) says
+what it runs.
 
 Windows shows the screen only to programs in your signed-in desktop
 session, and an SSH session has none. So `serve` over SSH hands the screen

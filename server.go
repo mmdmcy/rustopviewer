@@ -210,7 +210,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.authed(r) {
-		http.Error(w, "open this through lmice desktop DEVICE", http.StatusUnauthorized)
+		http.Error(w, "no key: open the address serve printed (ready key=KEY) through your SSH tunnel", http.StatusUnauthorized)
 		return
 	}
 	switch {

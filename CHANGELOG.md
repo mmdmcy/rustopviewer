@@ -51,7 +51,8 @@
 ## 0.3.0
 
 Rewritten in Go with no third-party modules: X11 hosts reached over SSH (a
-private socket, a key per session), a browser viewer, and `lmice desktop`.
+private socket, a key per session), a browser viewer, and a way for a fleet
+tool to open it in one step.
 The Rust version (registry, pairing, shared token) is at the tag `rust-era`.
 
 

@@ -88,11 +88,12 @@ in five more, the macOS host in three, and the page:
   Meta (⌘) change places in the keys it sends, and the paste it presses is
   ⌘V on a Mac.
 
-## With LinuxMice
+## Driven by another tool
 
-`lmice desktop DEVICE` asks the device for its home and viewer version,
-opens one SSH session through the fleet's pinned keys (and jump, if any)
-that forwards a free local port to the device's socket and runs
-`rustopviewer serve --until-stdin-closes`, reads the `ready key=` line,
-opens the browser, and ends the session (and with it the viewer) when you
-press Enter.
+A fleet tool that opens it for you does what the README does by hand: it
+asks the device for its home and viewer version (`rustopviewer version`),
+opens one SSH session that forwards a free local port to the device's
+socket and runs `rustopviewer serve --until-stdin-closes`, reads the
+`ready key=` line, opens the browser on `/?k=KEY`, and ends the session
+(and with it the viewer) when you are done. Nothing else is needed: no
+account, no registry, no setting on the device.
